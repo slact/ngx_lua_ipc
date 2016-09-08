@@ -1,3 +1,4 @@
+#include <ngx_lua_ipc.h>
 
 static shmem_t         *shm = NULL;
 static shm_data_t      *shdata = NULL;
@@ -5,6 +6,11 @@ static shm_data_t      *shdata = NULL;
 static ipc_t            ipc_data;
 static ipc_t           *ipc = NULL;
 
+
+void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_uint_t code, void *data) {
+  
+  
+}
 
 static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
   shm_data_t         *d;
@@ -34,7 +40,7 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
   ngx_str_t              name = ngx_string("ngx_lua_ipc");
 
   shm = shm_create(&name, cf, 32*1024, initialize_shm, &ngx_lua_ipc_module);
-  return NGX_OK;
+  return NX_OK;
 }
 
 static ngx_int_t nchan_init_module(ngx_cycle_t *cycle) {
@@ -80,7 +86,7 @@ static ngx_http_module_t  ngx_lua_ipc_ctx = {
   NULL,                          /* merge location configuration */
 };
 
-ngx_module_t  ngx_lua_ipc = {
+ngx_module_t  ngx_lua_ipc_module = {
   NGX_MODULE_V1,
   &ngx_lua_ipc_ctx,              /* module context */
   &ngx_lua_ipc_commands          /* module directives */

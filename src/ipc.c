@@ -1,10 +1,8 @@
 //worker processes of the world, unite.
-#include <nchan_module.h>
+#include <ngx_lua_ipc.h>
 #include <ngx_channel.h>
 #include <assert.h>
 #include "ipc.h"
-
-#include "store-private.h"
 
 #define DEBUG_LEVEL NGX_LOG_DEBUG
 //#define DEBUG_LEVEL NGX_LOG_WARN
@@ -26,8 +24,8 @@ ngx_int_t ipc_init(ipc_t *ipc) {
   int                             i = 0;
   ipc_process_t                  *proc;
   
-  nchan_init_timer(&receive_alert_delay_log_timer, receive_alert_delay_log_timer_handler, NULL);
-  nchan_init_timer(&send_alert_delay_log_timer, send_alert_delay_log_timer_handler, NULL);
+  ngx_lua_ipc_init_timer(&receive_alert_delay_log_timer, receive_alert_delay_log_timer_handler, NULL);
+  ngx_lua_ipc_init_timer(&send_alert_delay_log_timer, send_alert_delay_log_timer_handler, NULL);
   
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
     proc = &ipc->process[i];
