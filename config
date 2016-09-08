@@ -1,0 +1,25 @@
+ngx_addon_name=ngx_lua_ipc
+
+#  ngx_feature_libs=""
+
+_NGX_LUA_IPC_SRCS="\
+  ${ngx_addon_dir}/src/ipc.c \
+  ${ngx_addon_dir}/src/ipc_util.c \
+"
+
+ngx_module_incs=$ngx_addon_dir/src
+
+have=NGX_HTTP_HEADERS . auto/have
+
+if test -n "$ngx_module_link"; then
+  ngx_module_type=HTTP
+  ngx_module_name=$ngx_addon_name
+  ngx_module_srcs="$_NCHAN_SRCS"
+  ngx_module_libs=$ngx_feature_libs
+  . auto/module
+else
+  NGX_ADDON_SRCS="$NGX_ADDON_SRCS $_NGX_LUA_IPC_SRCS"
+  CORE_LIBS="$CORE_LIBS $ngx_feature_libs"
+  CORE_INCS="$CORE_INCS $ngx_module_incs"
+  HTTP_MODULES="$HTTP_MODULES $ngx_addon_name"
+fi
