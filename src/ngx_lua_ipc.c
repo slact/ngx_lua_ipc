@@ -10,12 +10,6 @@
 static ipc_t            ipc_data;
 static ipc_t           *ipc = NULL;
 
-
-void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_uint_t code, void *data) {
-  
-  
-}
-
 /*
 static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
   shm_data_t         *d;
@@ -44,17 +38,37 @@ static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
 
 
 static int ngx_http_lua_ipc_send_alert(lua_State * L) {
-  return 1;
+  int            target_worker = luaL_checknumber(L, 1);
+  int            alert_code = luaL_checknumber(L, 2);
+  size_t         data_sz;
+  const char    *data = luaL_checklstring(L, 3, &data_sz);
+  
+  ngx_int_t      rc;
+  
+  rc = ipc_alert(ipc, target_worker, alert_code, (void *)data, data_sz);
+  
+  return 0;
 }
 static int ngx_http_lua_ipc_broadcast_alert(lua_State * L) {
-  return 1;
+  return 0;
 }
 static int ngx_http_lua_ipc_listen_for_alert(lua_State * L) {
-  return 1;
+  int            alert_code = luaL_checknumber(L, 1);
+  luaL_checktype (L, 2, LUA_TFUNCTION);
+  
+  lua_getglobal(L, "ngx");
+  lua_getfield(L, -1, "ipc");
+  lua_getfield(L, -1, "alert_handler");
+  
+  lua_pushvalue(L, 2);
+  
+  lua_rawseti(L, -2, alert_code);
+  
+  return 0;
 }
 
-static int ngx_http_lua_ipc_create_table(lua_State * L) {
-  lua_createtable(L, 0, 3);
+static int ngx_http_lua_ipc_init_lua_code(lua_State * L) {
+  lua_createtable(L, 0, 4);
   lua_pushcfunction(L, ngx_http_lua_ipc_send_alert);
   lua_setfield(L, -2, "send");
 
@@ -63,8 +77,11 @@ static int ngx_http_lua_ipc_create_table(lua_State * L) {
 
   lua_pushcfunction(L, ngx_http_lua_ipc_listen_for_alert);
   lua_setfield(L, -2, "listen");
+  
+  lua_newtable(L);
+  lua_setfield(L, -2, "alert_handler");
 
-  return 1;
+  return 0;
 }
 
 
