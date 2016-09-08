@@ -24,8 +24,8 @@ ngx_int_t ipc_init(ipc_t *ipc) {
   int                             i = 0;
   ipc_process_t                  *proc;
   
-  ngx_lua_ipc_init_timer(&receive_alert_delay_log_timer, receive_alert_delay_log_timer_handler, NULL);
-  ngx_lua_ipc_init_timer(&send_alert_delay_log_timer, send_alert_delay_log_timer_handler, NULL);
+  nchan_init_timer(&receive_alert_delay_log_timer, receive_alert_delay_log_timer_handler, NULL);
+  nchan_init_timer(&send_alert_delay_log_timer, send_alert_delay_log_timer_handler, NULL);
   
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
     proc = &ipc->process[i];
@@ -156,7 +156,7 @@ static ngx_uint_t delayed_sent_alerts_count;
 static ngx_uint_t delayed_sent_alerts_delay;
 
 static void send_alert_delay_log_timer_handler(ngx_event_t *ev) {
-  nchan_log_error("Sending %ui interprocess alert%s delayed by %ui sec.", delayed_sent_alerts_count, delayed_sent_alerts_count == 1 ? "" : "s", (ngx_uint_t)(delayed_sent_alerts_count > 0 ? delayed_sent_alerts_delay / delayed_sent_alerts_count : 0));
+  //nchan_log_error("Sending %ui interprocess alert%s delayed by %ui sec.", delayed_sent_alerts_count, delayed_sent_alerts_count == 1 ? "" : "s", (ngx_uint_t)(delayed_sent_alerts_count > 0 ? delayed_sent_alerts_delay / delayed_sent_alerts_count : 0));
   
   delayed_sent_alerts_count = 0;
   delayed_sent_alerts_delay = 0;
@@ -165,7 +165,6 @@ static void send_alert_delay_log_timer_handler(ngx_event_t *ev) {
 static void ipc_record_alert_send_delay(ngx_uint_t delay) {
   delayed_sent_alerts_count ++;
   delayed_sent_alerts_delay += delay;
-  nchan_update_stub_status(ipc_total_send_delay, delay);
   if(!send_alert_delay_log_timer.timer_set && !ngx_exiting && !ngx_quit) {
     ngx_add_timer(&send_alert_delay_log_timer, 1000);
   }
@@ -207,19 +206,6 @@ static void ipc_write_handler(ngx_event_t *ev) {
   
   //DBG("%i alerts to write, with %i in overflow", proc->wbuf.n, proc->wbuf.overflow_n);
   
-  if(!memstore_ready()) {
-#if nginx_version >= 1008000
-    ev->cancelable = 1;
-#endif
-    ngx_add_timer(ev, 1000);
-    return;
-  }
-#if nginx_version >= 1008000
-  else {
-    ev->cancelable = 0;
-  }
-#endif
-  
   for(i = first; i < last; i++) {
     //ERR("send alert at %i", i % IPC_WRITEBUF_SIZE );
     if(ipc_write_alert_fd(fd, &alerts[i % IPC_WRITEBUF_SIZE]) != NGX_OK) {
@@ -244,8 +230,6 @@ static void ipc_write_handler(ngx_event_t *ev) {
     proc->wbuf.n -= (i - first);
     //DBG("first now at %i, %i alerts remain", i, proc->wbuf.n);
   }
-  
-  nchan_update_stub_status(ipc_queue_size, proc->wbuf.n - n);
   
   if(proc->wbuf.overflow_n > 0 && i - first > 0) {
     ipc_writebuf_overflow_t  *of;
@@ -365,7 +349,7 @@ static ngx_uint_t delayed_received_alerts_count;
 static ngx_uint_t delayed_received_alerts_delay;
 
 static void receive_alert_delay_log_timer_handler(ngx_event_t *ev) {
-  nchan_log_error("Received %ui interprocess alert%s delayed by %ui sec.", delayed_received_alerts_count, delayed_received_alerts_count == 1 ? "" : "s", (ngx_uint_t)(delayed_received_alerts_count > 0 ? delayed_received_alerts_delay / delayed_received_alerts_count : 0));
+  //nchan_log_error("Received %ui interprocess alert%s delayed by %ui sec.", delayed_received_alerts_count, delayed_received_alerts_count == 1 ? "" : "s", (ngx_uint_t)(delayed_received_alerts_count > 0 ? delayed_received_alerts_delay / delayed_received_alerts_count : 0));
   
   delayed_received_alerts_count = 0;
   delayed_received_alerts_delay = 0;
@@ -374,7 +358,6 @@ static void receive_alert_delay_log_timer_handler(ngx_event_t *ev) {
 static void ipc_record_alert_receive_delay(ngx_uint_t delay) {
   delayed_received_alerts_count ++;
   delayed_received_alerts_delay += delay;
-  nchan_update_stub_status(ipc_total_receive_delay, delay);
   if(!receive_alert_delay_log_timer.timer_set && !ngx_exiting && !ngx_quit) {
     ngx_add_timer(&receive_alert_delay_log_timer, 1000);
   }
@@ -423,7 +406,9 @@ static void ipc_read_handler(ngx_event_t *ev) {
     //ngx_log_debug1(NGX_LOG_DEBUG_CORE, ev->log, 0, "nchan: channel command: %d", ch.command);
     
     assert(n == sizeof(alert));
-    if(alert.worker_generation < memstore_worker_generation) {
+    
+    //if(alert.worker_generation < memstore_worker_generation) {
+    if(0) {
       ERR("Got IPC alert for previous generation's worker. discarding.");
     }
     else {
@@ -443,7 +428,6 @@ static void ipc_read_handler(ngx_event_t *ev) {
       if(ngx_time() - alert.time_sent >= 2) {
         ipc_record_alert_receive_delay(ngx_time() - alert.time_sent);
       }
-      nchan_update_stub_status(ipc_total_alerts_received, 1);
       ((ipc_t *)c->data)->handler(alert.src_slot, alert.code, alert.data);
 #endif
     }
@@ -458,7 +442,6 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
     ERR("IPC_DATA_SIZE too small. wanted %i, have %i", data_size, IPC_DATA_SIZE);
     assert(0);
   }
-  nchan_update_stub_status(ipc_total_alerts_sent, 1);
 #if (FAKESHARD)
   
   ipc_alert_t         alert = {0};
@@ -482,8 +465,6 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
   ipc_alert_t        *alert;
   
   assert(proc->active);
-  
-  nchan_update_stub_status(ipc_queue_size, 1);
   
   if(wb->n < IPC_WRITEBUF_SIZE) {
     alert = &wb->alerts[(wb->first + wb->n++) % IPC_WRITEBUF_SIZE];
@@ -512,7 +493,8 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
   alert->src_slot = ngx_process_slot;
   alert->time_sent = ngx_time();
   alert->code = code;
-  alert->worker_generation = memstore_worker_generation;
+  //alert->worker_generation = memstore_worker_generation;
+  alert->worker_generation = 0;
   ngx_memcpy(&alert->data, data, data_size);
   
   ipc_write_handler(proc->c->write);
