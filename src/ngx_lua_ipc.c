@@ -1,5 +1,9 @@
 #include <ngx_lua_ipc.h>
 #include <ipc.h>
+#include <lauxlib.h>
+#include "ngx_http_lua_api.h"
+
+
 //static shmem_t         *shm = NULL;
 //static shm_data_t      *shdata = NULL;
 
@@ -37,6 +41,34 @@ static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
 }
 */
 
+
+
+static int ngx_http_lua_ipc_send_alert(lua_State * L) {
+  return 1;
+}
+static int ngx_http_lua_ipc_broadcast_alert(lua_State * L) {
+  return 1;
+}
+static int ngx_http_lua_ipc_listen_for_alert(lua_State * L) {
+  return 1;
+}
+
+static int ngx_http_lua_ipc_create_table(lua_State * L) {
+  lua_createtable(L, 0, 3);
+  lua_pushcfunction(L, ngx_http_lua_ipc_send_alert);
+  lua_setfield(L, -2, "send");
+
+  lua_pushcfunction(L, ngx_http_lua_ipc_broadcast_alert);
+  lua_setfield(L, -2, "broadcast");
+
+  lua_pushcfunction(L, ngx_http_lua_ipc_listen_for_alert);
+  lua_setfield(L, -2, "listen");
+
+  return 1;
+}
+
+
+
 static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
   /*
   nchan_main_conf_t     *conf = ngx_http_conf_get_module_main_conf(cf, &ngx_lua_ipc_module);
@@ -44,6 +76,11 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
 
   shm = shm_create(&name, cf, 32*1024, initialize_shm, &ngx_lua_ipc_module);
   */
+  
+  if (ngx_http_lua_add_package_preload(cf, "ngx.ipc", ngx_http_lua_ipc_create_table) != NGX_OK) {
+    return NGX_ERROR;
+  }
+  
   return NGX_OK;
 }
 
