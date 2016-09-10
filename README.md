@@ -32,7 +32,7 @@ ipc.broadcast(ipc_alert_code, data_string)
 
 usage:
 
-```lua_nginx_module
+```nginx
 
 http {
 
