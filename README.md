@@ -1,10 +1,12 @@
-Interprocess communication for lua_nginx_module and openresty.
+Interprocess communication for lua_nginx_module and openresty. 
 
 This is a **proof of concept**. There are severe limitations on the use of this thing.
 Interprocess messages can be no more than 512 bytes, and can't have null characters.
 There's no worker crash recovery. The receiving lua VM does not yet run in a proper coroutine. Also it may spawn gremlins.
 
 It does, however, reliably send messages between worker processes.
+
+I wrote this as a quick hack to separate the [interprocess code](https://github.com/slact/nchan/tree/master/src/store/memory) out of [Nchan](https://github.com/slact/nchan) mostly on a flight back from Nginx Conf 2016.
 
 
 API:
