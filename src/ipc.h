@@ -1,4 +1,4 @@
-#define IPC_DATA_SIZE 56
+#define IPC_DATA_SIZE 512
 //#define IPC_DATA_SIZE 80
 
 typedef struct {

@@ -442,29 +442,18 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
     ERR("IPC_DATA_SIZE too small. wanted %i, have %i", data_size, IPC_DATA_SIZE);
     assert(0);
   }
-#if (FAKESHARD)
-  
-  ipc_alert_t         alert = {0};
-  
-  alert.src_slot = memstore_slot();
-  alert.time_sent = ngx_time();
-  alert.worker_generation = memstore_worker_generation;
-  alert.code = code;
-  ngx_memcpy(alert.data, data, data_size);
-  
-  //switch to destination
-  memstore_fakeprocess_push(slot);
-  ipc->handler(alert.src_slot, alert.code, alert.data);
-  memstore_fakeprocess_pop();
-  //switch back  
-  
-#else
-  
   ipc_process_t      *proc = &ipc->process[slot];
   ipc_writebuf_t     *wb = &proc->wbuf;
   ipc_alert_t        *alert;
   
-  assert(proc->active);
+  if(slot == ngx_process_slot) {
+    ipc->handler(slot, code, data);
+    return NGX_OK;
+  }
+  
+  if(!proc->active) {
+    return NGX_ERROR;
+  }
   
   if(wb->n < IPC_WRITEBUF_SIZE) {
     alert = &wb->alerts[(wb->first + wb->n++) % IPC_WRITEBUF_SIZE];
@@ -501,8 +490,6 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
   
   //ngx_handle_write_event(ipc->c[slot]->write, 0);
   //ngx_add_event(ipc->c[slot]->write, NGX_WRITE_EVENT, NGX_CLEAR_EVENT);
-  
-#endif
 
   return NGX_OK;
 }
