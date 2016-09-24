@@ -132,6 +132,7 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_uint_t code, void *data) {
   lua_State *L = alert_L;
   int i, sender_pid;
+  int found = 0;
   
   if(!L) {
     //no alert handlers here
@@ -145,13 +146,18 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_uint_t code, vo
   for(i=0; i<max_workers; i++) {
     if(shdata->worker_slots[i].slot == sender_slot) {
       sender_pid = shdata->worker_slots[i].pid;
+      found = 1;
       break;
     }
   }
-  
-  lua_pushinteger(L, sender_pid);
-  lua_pushstring(L, (char *)data);
-  lua_call(L, 2, 0);
+  if(found) {
+    lua_pushinteger(L, sender_pid);
+    lua_pushstring(L, (char *)data);
+    lua_call(L, 2, 0);
+  }
+  else {
+    //uuh....
+  }
 }
 
 static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
