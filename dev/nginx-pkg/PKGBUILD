@@ -1,12 +1,17 @@
 #!/bin/zsh
-
-_nginx_ver_latest=1.11.3
-_nginx_ver_stable=1.10.1
+_nginx_ver_latest=1.11.5
+_nginx_ver_stable=1.10.2
 _nginx_ver_nopool=1.11.2
 _nginx_ver_legacy=1.8.1
 _nginx_ver_old=1.6.3
 _nginx_ver_very_old=0.8.55
+_lua_nginx_module_ver="0.10.7"
+_lua_upstream_nginx_module_ver="0.06"
 
+_openresty_ver=1.11.2.2
+if [[ -n $OPENRESTY_CUSTOM_VERSION ]]; then
+  _openresty_ver=$OPENRESTY_CUSTOM_VERSION
+fi
 
 OPTIONS=(!strip debug docs libtool staticlibs emptydirs zipman purge !upx)
 if [[ -z $NO_DEBUG ]]; then
@@ -14,16 +19,37 @@ if [[ -z $NO_DEBUG ]]; then
   CFLAGS=" -ggdb -fvar-tracking-assignments -O$OPTIMIZE_LEVEL"
 fi
 
-CFLAGS="$CFLAGS -Wall -Wextra -Wno-unused-parameter -Wpointer-arith -Wshadow -Wnested-externs -Wsign-compare"
-
+CFLAGS="$CFLAGS -Wno-error -Wall -Wextra -Wno-unused-parameter -Wpointer-arith -Wshadow -Wnested-externs -Wsign-compare"
+if [[ $SANITIZE_UNDEFINED == 1 ]]; then
+    CFLAGS="$CFLAGS -fsanitize=undefined -fsanitize=shift -fsanitize=integer-divide-by-zero -fsanitize=unreachable -fsanitize=vla-bound -fsanitize=null -fsanitize=return -fsanitize=bounds -fsanitize=alignment -fsanitize=object-size -fsanitize=float-divide-by-zero -fsanitize=float-cast-overflow -fsanitize=nonnull-attribute -fsanitize=returns-nonnull-attribute -fsanitize=enum -lubsan"
+fi
 _include_http2=0
 
-_lua_nginx_module_ver="0.10.6"
-_lua_upstream_nginx_module_ver="0.06"
+_semver_lt() {
+  _ver1=(${1//./ })
+  _ver2=(${2//./ })
+  
+  if (( ${_ver1[0]} < ${_ver2[0]} )); then
+    return 0
+  elif (( ${_ver1[0]} == ${_ver2[0]} && ${_ver1[1]} < ${_ver2[1]} )); then
+    return 0
+  elif (( ${_ver1[0]} == ${_ver2[0]} && ${_ver1[1]} == ${_ver2[1]} && ${_ver1[2]} < ${_ver2[2]} )); then
+    return 0
+  else
+    return 1
+  fi
+}
+
+_semver_gteq() {
+  if (_semver_lt "$1" "$2"); then
+    return 1
+  else
+    return 0
+  fi
+}
 
 if [[ $NO_POOL == 1 ]]; then
   _nginx_ver=$_nginx_ver_nopool
-  _include_http2=1
 elif [[ $NGINX_LEGACYVERSION == 1 ]]; then
   _nginx_ver=$_nginx_ver_legacy
 elif [[ $NGINX_OLDVERSION == 1 ]]; then
@@ -32,9 +58,21 @@ elif [[ $NGINX_VERYOLDVERSION == 1 ]]; then
   _nginx_ver=$_nginx_ver_very_old
 elif [[ $NGINX_STABLEVERSION == 1 ]]; then
   _nginx_ver=$_nginx_ver_stable
-  _include_spdy=1
+elif [[ -n $NGINX_CUSTOM_VERSION ]]; then
+  _nginx_ver=$NGINX_CUSTOM_VERSION
 else
   _nginx_ver=$_nginx_ver_latest
+fi
+
+if [[ -n $_nginx_ver ]]; then
+  if (_semver_gteq $_nginx_ver 1.9.5); then
+    _include_http2=1
+  elif (_semver_gteq $_nginx_ver 1.3.15); then
+    _include_spdy=1
+  fi
+  _nginx_git_source_fragment="#tag=release-${_nginx_ver}"
+else
+  #using master
   _include_http2=1
 fi
 
@@ -44,8 +82,6 @@ PKGEXT=".pkg.tar"
 _user="http"
 _group="http"
 _doc_root="/usr/share/${_pkgname}/http"
-_sysconf_path="etc"
-_conf_path="${_sysconf_path}/${_pkgname}"
 _tmp_path="/tmp"
 _pid_path="/run"
 _lock_path="/var/lock"
@@ -72,7 +108,33 @@ url="http://nginx.org"
 license=('custom')
 conflicts=('nginx' 'nginx-unstable' 'nginx-svn' 'nginx-devel' 'nginx-custom-dev' 'nginx-custom-slact') 
 provides=('nginx' 'nginx-custom')
-backup=("${_conf_path}/conf/nginx.conf"
+
+if [[ -n $USE_OPENRESTY ]]; then
+  _name="openresty"
+else
+  _name="nginx"
+fi
+
+
+if [[ -z $DEFAULT_PREFIX ]]; then
+  if [[ -n $CUSTOM_PREFIX ]]; then
+    _prefix_path=$CUSTOM_PREFIX
+  else
+    _prefix_path="/etc/$_name"
+  fi
+else
+  _prefix_path="/usr/local/$_name"
+fi
+
+if [[ -n $USE_OPENRESTY ]]; then
+  _conf_path="${_prefix_path:1}/nginx"
+else
+  _conf_path="${_prefix_path:1}"
+fi
+
+_nginxconf_path="${_conf_path}/conf/nginx.conf"
+
+backup=("${_nginxconf_path}"
   "${_conf_path}/conf/koi-win"
   "${_conf_path}/conf/koi-utf"
   "${_conf_path}/conf/win-utf"
@@ -86,13 +148,38 @@ _user=http
 _group=http
 
 _nginx_source="http://nginx.org/download/nginx-${_nginx_ver}.tar.gz"
+
+_openresty_source="https://openresty.org/download/openresty-${_openresty_ver}.tar.gz"
+
+_nginx_git_source="git+https://github.com/nginx/nginx.git${_nginx_git_source_fragment}"
+
 _no_pool_patch_source="https://raw.github.com/shrimp/no-pool-nginx/master/nginx-${_nginx_ver_nopool}-no_pool.patch"
 _lua_nginx_module_url="https://github.com/openresty/lua-nginx-module/archive/v${_lua_nginx_module_ver}.tar.gz"
 _lua_upstream_nginx_module_url="https://github.com/openresty/lua-upstream-nginx-module/archive/v${_lua_upstream_nginx_module_ver}.tar.gz"
-source=($_nginx_source
+_ngx_debug_pool_url="https://github.com/chobits/ngx_debug_pool.git"
+_ngx_echo_module="https://github.com/openresty/echo-nginx-module/archive/v${_ngx_echo_module_ver}.tar.gz"
+
+_lua_stream_module_ver=0.0.1
+_lua_stream_module_src="https://github.com/openresty/stream-lua-nginx-module/archive/v${_lua_stream_module_ver}.tar.gz"
+
+if [[ -n $USE_OPENRESTY ]]; then
+  _source=$_openresty_source
+  _extracted_dir="openresty-${_openresty_ver}"  
+else
+  if [[ -n $NO_MAKEPKG ]]; then
+    _source=$_nginx_source
+      _extracted_dir="nginx-${_nginx_ver}"
+  else
+    _source=$_nginx_git_source
+    _extracted_dir="nginx"
+  fi
+fi
+
+source=("$_source"
   "nginx.conf"
   "nginx.logrotate"
   "nginx.service"
+  "git+${_ngx_debug_pool_url}"
   "$_no_pool_patch_source"
   "bl.txt"
   $_lua_nginx_module_url
@@ -105,14 +192,20 @@ md5sums=('SKIP'
          'SKIP'
          'SKIP'
          'SKIP'
-         'SKIP')
+         'SKIP'
+	 'SKIP')
+
+if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
+  source+=( "$_lua_stream_module_src" )
+  md5sums+=( 'SKIP')
+fi
 
 build() {
-  local _src_dir="${srcdir}/nginx-$_nginx_ver"
-  ln -sfT "$_src_dir" "$srcdir/nginx"
+  local _src_dir="${srcdir}/${_extracted_dir}"
+  #ln -sfT "$_src_dir" "$srcdir/nginx"
   ln -sfT "$_ipc_dir" "$srcdir/ngx_lua_ipc"
   local _build_dir="${_src_dir}/objs"
-  cd "$srcdir/nginx"
+  cd "$srcdir/${_extracted_dir}"
   
   if [[ -z $CONTINUE ]] && [[ -z $NO_EXTRACT_SOURCE ]]; then
     if [[ $NO_POOL == 1 ]]; then
@@ -135,8 +228,22 @@ build() {
 
   CFLAGS="${CFLAGS/-Werror/}" #no warning-as-error
   
-  CONFIGURE=(
-    --prefix=/${_conf_path}
+  CONFIGURE=()
+  
+  if [[ -n $EXTRA_CONFIG_OPT ]]; then
+    if type "readarray"; then
+      readarray -t lines <<<"$EXTRA_CONFIG_OPT"
+    else
+      lines="${(@f)EXTRA_CONFIG_OPT}"
+    fi    
+    CONFIGURE+=$lines
+  fi
+  
+  if [[ -z $DEFAULT_PREFIX ]]; then
+    CONFIGURE+=( --prefix=$_prefix_path )
+  fi
+  
+  CONFIGURE+=(
     --sbin-path=/usr/bin/nginx
     --pid-path=${_pid_path}/nginx.pid
     --lock-path=${_pid_path}/nginx.lock
@@ -147,10 +254,25 @@ build() {
     --http-log-path=${_access_log}
     --error-log-path=${_error_log}
     --with-http_ssl_module
-    --add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}
-    --add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}
   )
 
+if [[ -z $USE_OPENRESTY ]]; then
+  CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}"
+               "--add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}")
+fi
+
+  if [[ -n $WITH_STREAM_MODULE ]]; then
+    CONFIGURE+=( --with-stream )
+  fi
+
+  if [[ -n $WITH_STUB_STATUS_MODULE ]]; then
+    CONFIGURE+=( --with-http_stub_status_module )
+  fi
+  
+  if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
+    CONFIGURE+=( --add-module=../stream-lua-nginx-module-${_lua_stream_module_ver} )
+  fi
+  
   if [[ $DYNAMIC == 1 ]]; then
     CONFIGURE+=( --add-dynamic-module=../ngx_lua_ipc )
   else
@@ -181,6 +303,11 @@ build() {
     CONFIGURE+=( "--http-scgi-temp-path=${_tmp_path}/scgi_temp" )
   fi
 
+  if [[ $SANITIZE_UNDEFINED == 1 ]]; then
+    CONFIGURE+=("--with-ld-opt=-lubsan")
+  fi
+
+  
   if [[ $CC == *clang* ]]; then
     #not a valid clang parameter
     CFLAGS="${CFLAGS/-fvar-tracking-assignments/}"
@@ -202,33 +329,40 @@ build() {
   else
     ln -svf $srcdir/bl.txt
 
-    if [[ ! -z $EXPLICIT_CFLAGS ]]; then
-      CONFIGURE+=( "--with-cc-opt=${CFLAGS}" )
+    if [[ -n $EXPLICIT_CFLAGS ]]; then
+      _cc_opt="--with-cc-opt=${CFLAGS}"
+    else
+      _cc_opt=""
     fi
-    echo "./configure ${CONFIGURE[@]}"
-    ./configure ${CONFIGURE[@]}
+    
+    if [[ ! -f ./configure ]]; then
+      ln -s auto/configure ./
+    fi
+    
+    echo "./configure ${CONFIGURE[@]} $_cc_opt" 
+    echo "weee"
+    ./configure ${CONFIGURE[@]} "$_cc_opt"
     make
   fi
 }
 
 package() {
-  echo "make install >/dev/null"
-  cd "${srcdir}/nginx-${_nginx_ver}"
+  echo "make install"
+  cd "${srcdir}/${_extracted_dir}"
   make DESTDIR="$pkgdir/" install >/dev/null
-  
-  sed -i -e "s/\<user\s\+\w\+;/user $_user;/g" $pkgdir/$_conf_path/conf/nginx.conf
-  
+  sed -i -e "s/\<user\s\+\w\+;/user $_user;/g" $pkgdir/${_nginxconf_path}
   install -d "${pkgdir}/${_tmp_path}" 
   install -d "${pkgdir}/${_doc_root}" 
-  
+    
   mv "${pkgdir}/${_conf_path}/html/"* "${pkgdir}/${_doc_root}"
   rm -rf "${pkgdir}/${_conf_path}/html"
+  
   
   #install -D -m644 "${srcdir}/nginx.logrotate" "${pkgdir}/etc/logrotate.d/${_pkgname}" #no default logrotate.
   install -D -m644 "${srcdir}/nginx.conf" "${pkgdir}/etc/conf.d/nginx"
   install -D -m644 "${srcdir}/nginx.service" "${pkgdir}/lib/systemd/system/nginx.service"
-  install -D -m644 "LICENSE" "${pkgdir}/usr/share/licenses/nginx/LICENSE"
-  if [[ -z $NGINX_VERYOLDVERSION ]]; then
-    install -D -m644 "man/nginx.8" "${pkgdir}/usr/share/man/man8/nginx.8"
-  fi
+  #install -D -m644 "LICENSE" "${pkgdir}/usr/share/licenses/nginx/LICENSE"
+  #if [[ -z $NGINX_VERYOLDVERSION ]]; then
+  #  install -D -m644 "man/nginx.8" "${pkgdir}/usr/share/man/man8/nginx.8"
+  #fi
 }

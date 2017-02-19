@@ -12,6 +12,7 @@ clang_sanitize_addres="-fsanitize=address,undefined -fno-omit-frame-pointer"
 optimize_level=0;
 
 export CONFIGURE_WITH_DEBUG=0
+_extra_config_opt=()
 
 for opt in $*; do
   case $opt in
@@ -20,6 +21,9 @@ for opt in $*; do
     clang-sanitize|sanitize|sanitize-memory)
       export CC="CMAKE_LD=llvm-link $_clang -Xclang -cc1 $clang_sanitize_memory "
       export CLINKER=$clang
+      ;;
+    gcc-sanitize-undefined)
+      export SANITIZE_UNDEFINED=1
       ;;
     sanitize-address)
       export CC="$_clang $clang_sanitize_addres";;
@@ -64,6 +68,10 @@ for opt in $*; do
       export NGINX_OLDVERSION=1;;
     veryoldversion|veryold)
       export NGINX_VERYOLDVERSION=1;;
+    version=*)
+      export NGINX_CUSTOM_VERSION="${opt:8}";;
+    release=*)
+      RELEASE="${opt:8}";;
     slabpatch|slab)
       export NGX_SLAB_PATCH=1;;
     withdebug)
@@ -73,10 +81,31 @@ for opt in $*; do
       export CLANG_ANALYZER=$MY_PATH/clang-analyzer
       mkdir $CLANG_ANALYZER 2>/dev/null
       ;;
+    stub_status)
+      export WITH_STUB_STATUS_MODULE=1
+      ;;
+    default_prefix)
+      export DEFAULT_PREFIX=1;;
+    prefix=*)
+      export CUSTOM_PREFIX="${opt:7}";;
+    openresty)
+      export EXPLICIT_CFLAGS=1
+      export USE_OPENRESTY=1;;
+    openresty=*)
+      export OPENRESTY_CUSTOM_VERSION="${opt:10}"
+      export USE_OPENRESTY=1
+      ;;
+    lua_stream_module)
+      export WITH_LUA_STREAM_MODULE=1
+      export WITH_STREAM_MODULE=1
+      ;;
+    --*)
+      _extra_config_opt+=( "$opt" )
   esac
 done
 
 export NO_WITH_DEBUG=$NO_WITH_DEBUG;
+export EXTRA_CONFIG_OPT=`echo $_extra_config_opt`
 
 _build_nginx() {
 
@@ -102,15 +131,18 @@ _build_nginx() {
   pkgdir="${startdir}/pkg/${pkgname}"
   mkdir -p "$srcdir" "$pkgdir"
 
-  echo $_nginx_source
+  echo $_source
   echo $_no_pool_patch_source
   
-  wget --no-clobber $_nginx_source
+  wget --no-clobber $_source
   wget --no-clobber $_no_pool_patch_source
+  if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
+    wget --no-clobber $_lua_stream_module_src
+  fi
 
   if [[ -z $NO_EXTRACT_SOURCE ]]; then
     pushd src
-    _nginx_src_file="${_nginx_source##*/}"
+    _nginx_src_file="${_source##*/}"
     echo $_nginx_src_file
     tar xf "../${_nginx_src_file}"
     cp "../${_no_pool_patch_source##*/}" ./
@@ -121,12 +153,19 @@ _build_nginx() {
       git pull
       popd
     fi
+    
+    if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
+      tar xf "../v${_lua_stream_module_ver}.tar.gz"
+    fi
     popd
   fi
 
+  rm "${srcdir}/nginx"
+  ln -sf "${srcdir}/${_extracted_dir}" "${srcdir}/nginx"
+  
   build
 
-  pushd "${srcdir}/nginx-${_nginx_ver}"
+  pushd "${srcdir}/nginx"
   ls -alh
   make DESTDIR="$pkgdir/" install
   popd
@@ -137,23 +176,22 @@ export OPTIMIZE_LEVEL=$optimize_level
 
 if [[ -z $NO_MAKE ]]; then
   
-  #./redocument.rb
-
-  #./gen_config_commands.rb nchan_config_commands.c
+  #./gen_config_commands.rb
   #if ! [ $? -eq 0 ]; then; 
   #  echo "failed generating nginx directives"; 
   #  exit 1
   #fi
-
-  #rdstore_dir=${MY_PATH}/../src/store/redis
-  #bundle exec hsss \
-  #   --format whole \
-   #  ${rdstore_dir}/scripts/*.lua > ${rdstore_dir}/redis_lua_commands.h
-  #if ! [ $? -eq 0 ]; then;
-  #  echo "failed generating redis lua scripts";
-  #  exit 1
-  #fi  
   
+  #if [[ -n $RELEASE ]]; then
+  #  ./redocument.rb --release $RELEASE
+  #else
+  #  ./redocument.rb
+  #fi
+  #if ! [ $? -eq 0 ]; then; 
+  #  echo "failed generating documentation"; 
+  #  exit 1
+  #fi
+
   pushd ./nginx-pkg >/dev/null
   
   _build_nginx
