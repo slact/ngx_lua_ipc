@@ -328,20 +328,19 @@ fi
     make $REMAKE
   else
     ln -svf $srcdir/bl.txt
-
-    if [[ -n $EXPLICIT_CFLAGS ]]; then
-      _cc_opt="--with-cc-opt=${CFLAGS}"
-    else
-      _cc_opt=""
-    fi
     
     if [[ ! -f ./configure ]]; then
       ln -s auto/configure ./
     fi
     
-    echo "./configure ${CONFIGURE[@]} $_cc_opt" 
-    echo "weee"
-    ./configure ${CONFIGURE[@]} "$_cc_opt"
+    
+    if [[ -n $EXPLICIT_CFLAGS ]]; then
+      echo "./configure ${CONFIGURE[@]} --with-cc-opt=\"${CFLAGS}\"" 
+      ./configure ${CONFIGURE[@]} "$_cc_opt"
+    else
+      ./configure ${CONFIGURE[@]}
+    fi
+    
     make
   fi
 }
