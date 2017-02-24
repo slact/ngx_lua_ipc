@@ -10,22 +10,13 @@
 #define DBG(fmt, args...) ngx_log_error(DEBUG_LEVEL, ngx_cycle->log, 0, "IPC:" fmt, ##args)
 #define ERR(fmt, args...) ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "IPC:" fmt, ##args)
 
-//#define DEBUG_DELAY_IPC_RECEIVE_ALERT_MSEC 100
-
-static ngx_event_t  receive_alert_delay_log_timer;
-static ngx_event_t  send_alert_delay_log_timer;
-static void receive_alert_delay_log_timer_handler(ngx_event_t *ev);
-static void send_alert_delay_log_timer_handler(ngx_event_t *ev);
-
 
 static void ipc_read_handler(ngx_event_t *ev);
+static ngx_int_t ipc_free_buffered_alert(ipc_alert_link_t *alert_link);
 
 ngx_int_t ipc_init(ipc_t *ipc) {
   int                             i = 0;
   ipc_process_t                  *proc;
-  
-  nchan_init_timer(&receive_alert_delay_log_timer, receive_alert_delay_log_timer_handler, NULL);
-  nchan_init_timer(&send_alert_delay_log_timer, send_alert_delay_log_timer_handler, NULL);
   
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
     proc = &ipc->process[i];
@@ -34,17 +25,14 @@ ngx_int_t ipc_init(ipc_t *ipc) {
     proc->pipe[1]=NGX_INVALID_FILE;
     proc->c=NULL;
     proc->active = 0;
-    ngx_memzero(proc->wbuf.alerts, sizeof(proc->wbuf.alerts));
-    proc->wbuf.first = 0;
+    proc->wbuf.head = NULL;
+    proc->wbuf.tail = NULL;
     proc->wbuf.n = 0;
-    proc->wbuf.overflow_first = NULL;
-    proc->wbuf.overflow_last = NULL;
-    proc->wbuf.overflow_n = 0;
   }
   return NGX_OK;
 }
 
-ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_uint_t, void *)) {
+ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_uint_t, void *, size_t)) {
   ipc->handler=alert_handler;
   return NGX_OK;
 }
@@ -129,7 +117,7 @@ ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slo
 ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
   int i;
   ipc_process_t            *proc;
-  ipc_writebuf_overflow_t  *of, *of_next;
+  ipc_alert_link_t         *cur, *cur_next;
   
   for (i=0; i<NGX_MAX_PROCESSES; i++) {
     proc = &ipc->process[i];
@@ -140,9 +128,9 @@ ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
       proc->c = NULL;
     }
     
-    for(of = proc->wbuf.overflow_first; of != NULL; of = of_next) {
-      of_next = of->next;
-      ngx_free(of);
+    for(cur = proc->wbuf.head; cur != NULL; cur = cur_next) {
+      cur_next = cur->next;
+      ipc_free_buffered_alert(cur);
     }
     
     ipc_try_close_fd(&proc->pipe[0]);
@@ -152,30 +140,24 @@ ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
   return NGX_OK;
 }
 
-static ngx_uint_t delayed_sent_alerts_count;
-static ngx_uint_t delayed_sent_alerts_delay;
 
-static void send_alert_delay_log_timer_handler(ngx_event_t *ev) {
-  //nchan_log_error("Sending %ui interprocess alert%s delayed by %ui sec.", delayed_sent_alerts_count, delayed_sent_alerts_count == 1 ? "" : "s", (ngx_uint_t)(delayed_sent_alerts_count > 0 ? delayed_sent_alerts_delay / delayed_sent_alerts_count : 0));
+static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *alert_link) {
+  int          n;
+  ngx_int_t    err;
+  uint16_t     unsent;
+  ipc_alert_t *alert = &alert_link->alert;
+  char        *data;
   
-  delayed_sent_alerts_count = 0;
-  delayed_sent_alerts_delay = 0;
-}
-
-static void ipc_record_alert_send_delay(ngx_uint_t delay) {
-  delayed_sent_alerts_count ++;
-  delayed_sent_alerts_delay += delay;
-  if(!send_alert_delay_log_timer.timer_set && !ngx_exiting && !ngx_quit) {
-    ngx_add_timer(&send_alert_delay_log_timer, 1000);
+  if(!alert_link->header_sent) {
+    assert(write(fd, &alert->sz, sizeof(alert->sz)) == sizeof(alert->sz));
+    assert(write(fd, &alert->src_slot, sizeof(alert->src_slot)) == sizeof(alert->src_slot));
+    alert_link->header_sent = 1;
   }
-}
-
-static ngx_int_t ipc_write_alert_fd(ngx_socket_t fd, ipc_alert_t *alert) {
-  int         n;
-  ngx_int_t   err;
-  
-  n = write(fd, alert, sizeof(*alert));
  
+  unsent = alert->sz - alert_link->sent;
+  data = &alert->data[alert_link->sent];
+  
+  n = write(fd, data, unsent);
   if (n == -1) {
     err = ngx_errno;
     if (err == NGX_EAGAIN) {
@@ -186,10 +168,17 @@ static ngx_int_t ipc_write_alert_fd(ngx_socket_t fd, ipc_alert_t *alert) {
     assert(0);
     return NGX_ERROR;
   }
-  
-  if(ngx_time() - alert->time_sent >= 2) {
-    ipc_record_alert_send_delay(ngx_time() - alert->time_sent);
+  else if (n < unsent) {
+    alert_link->sent += n;
+    return NGX_EAGAIN;
   }
+  
+  return NGX_OK;
+}
+
+static ngx_int_t ipc_free_buffered_alert(ipc_alert_link_t *alert_link) {
+  ngx_free(alert_link->alert.data);
+  ngx_free(alert_link);
   return NGX_OK;
 }
 
@@ -198,76 +187,41 @@ static void ipc_write_handler(ngx_event_t *ev) {
   ngx_socket_t             fd = c->fd;
   
   ipc_process_t           *proc = (ipc_process_t *) c->data;
-  ipc_alert_t             *alerts = proc->wbuf.alerts;
+  ipc_alert_link_t        *cur;
   
-  int                      n = proc->wbuf.n;
-  int                      i, first = proc->wbuf.first, last = first + n;
+  ngx_int_t                rc;
+  
   uint8_t                  write_aborted = 0;
   
-  //DBG("%i alerts to write, with %i in overflow", proc->wbuf.n, proc->wbuf.overflow_n);
-  
-  for(i = first; i < last; i++) {
-    //ERR("send alert at %i", i % IPC_WRITEBUF_SIZE );
-    if(ipc_write_alert_fd(fd, &alerts[i % IPC_WRITEBUF_SIZE]) != NGX_OK) {
+  while((cur = proc->wbuf.head) != NULL) {
+    rc = ipc_write_buffered_alert(fd, cur);
+    
+    if(rc == NGX_EAGAIN) {
       write_aborted = 1;
-      //DBG("write aborted at %i iter. first: %i, n: %i", i - first, first, proc->wbuf.n);
       break;
     }
-    /*
-    else {
-      DBG("wrote alert at %i", i % IPC_WRITEBUF_SIZE);
-    }
-    */
-  }
-  
-  if(i==last) { //sent all outstanding alerts
-    //DBG("finished writing %i alerts.", proc->wbuf.n);
-    proc->wbuf.first = 0; // for debugging and stuff
-    proc->wbuf.n = 0;
-  }
-  else {
-    proc->wbuf.first = i;
-    proc->wbuf.n -= (i - first);
-    //DBG("first now at %i, %i alerts remain", i, proc->wbuf.n);
-  }
-  
-  if(proc->wbuf.overflow_n > 0 && i - first > 0) {
-    ipc_writebuf_overflow_t  *of;
-    first = proc->wbuf.first + proc->wbuf.n;
-    last = first + (IPC_WRITEBUF_SIZE - proc->wbuf.n);
-    //DBG("try to squeeze in overflow between %i and %i", first, last);
-    for(i = first; i < last; i++) {
-      of = proc->wbuf.overflow_first;
-      ///DBG("looking at overflow %p next %p", of, of->next);
-      alerts[i % IPC_WRITEBUF_SIZE] = of->alert;
-      proc->wbuf.overflow_n--;
-      proc->wbuf.n++;
-      assert(proc->wbuf.overflow_n >= 0);
-      
-      proc->wbuf.overflow_first = of->next;
-      
-      ngx_free(of);
-      
-      //DBG("squeezed in overflow at %i, %i overflow remaining", i, proc->wbuf.overflow_n);
-      
-      if(proc->wbuf.overflow_first == NULL) {
-        proc->wbuf.overflow_last = NULL;
-        break;
+    else if(rc == NGX_OK) {
+      proc->wbuf.head = cur->next;
+      if(proc->wbuf.tail == cur) {
+        proc->wbuf.tail = NULL;
       }
+      ipc_free_buffered_alert(cur);
+      
     }
-    
-    if(!write_aborted) {
-      //retry
-      //DBG("retry write after squeezing in overflow");
-      ipc_write_handler(ev);
-      return;
+    else {
+      //we got other problems
+      write_aborted = 1;
+      break;
     }
-    
   }
   
   if(write_aborted) {
     //DBG("re-add event because the write failed");
     ngx_handle_write_event(c->write, 0);
+  }
+  else {
+    assert(proc->wbuf.head == NULL);
+    assert(proc->wbuf.tail == NULL);
   }
 }
 
@@ -313,14 +267,26 @@ ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   return NGX_OK;
 }
 
-static ngx_int_t ipc_read_socket(ngx_socket_t s, ipc_alert_t *alert, ngx_log_t *log) {
+static ngx_int_t ipc_read_socket(ngx_socket_t s, ipc_readbuf_t *rbuf, ngx_log_t *log) {
   DBG("IPC read channel");
   ssize_t             n;
   ngx_err_t           err;
-  //static char         buf[sizeof(ipc_alert_t) * 2];
-  //static char        *cur;
+  ssize_t             unreceived;
   
-  n = read(s, alert, sizeof(ipc_alert_t));
+  if(!rbuf->header_received) {
+    assert(rbuf->received == 0);
+    assert(read(s, &rbuf->alert.sz, sizeof(rbuf->alert.sz)) == sizeof(rbuf->alert.sz));
+    assert(read(s, &rbuf->alert.src_slot, sizeof(rbuf->alert.src_slot)) == sizeof(rbuf->alert.src_slot));
+    rbuf->header_received = 1;
+    
+    assert(rbuf->alert.data == NULL);
+    rbuf->alert.data = ngx_alloc(rbuf->alert.sz, ngx_cycle->log);
+    assert(rbuf->alert.data != NULL);
+  }
+
+  unreceived = rbuf->alert.sz - rbuf->received;
+  
+  n = read(s, rbuf->alert.data, unreceived);
  
   if (n == -1) {
     err = ngx_errno;
@@ -330,36 +296,19 @@ static ngx_int_t ipc_read_socket(ngx_socket_t s, ipc_alert_t *alert, ngx_log_t *
     
     ngx_log_error(NGX_LOG_ERR, log, err, "nchan IPC: read() failed");
     return NGX_ERROR;
-  }
- 
-  if (n == 0) {
+  } 
+  else if (n == 0) {
     ngx_log_debug0(NGX_LOG_ERR, log, 0, "nchan IPC: read() returned zero");
     return NGX_ERROR;
   }
- 
-  if ((size_t) n < sizeof(*alert)) {
-    ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: read() returned not enough data: %z", n);
-    return NGX_ERROR;
+  else if (n < unreceived) {
+    rbuf->received += n;
+    return NGX_AGAIN;
   }
-  
-  return n;
-}
-
-static ngx_uint_t delayed_received_alerts_count;
-static ngx_uint_t delayed_received_alerts_delay;
-
-static void receive_alert_delay_log_timer_handler(ngx_event_t *ev) {
-  //nchan_log_error("Received %ui interprocess alert%s delayed by %ui sec.", delayed_received_alerts_count, delayed_received_alerts_count == 1 ? "" : "s", (ngx_uint_t)(delayed_received_alerts_count > 0 ? delayed_received_alerts_delay / delayed_received_alerts_count : 0));
-  
-  delayed_received_alerts_count = 0;
-  delayed_received_alerts_delay = 0;
-}
-
-static void ipc_record_alert_receive_delay(ngx_uint_t delay) {
-  delayed_received_alerts_count ++;
-  delayed_received_alerts_delay += delay;
-  if(!receive_alert_delay_log_timer.timer_set && !ngx_exiting && !ngx_quit) {
-    ngx_add_timer(&receive_alert_delay_log_timer, 1000);
+  else {
+    rbuf->received += n;
+    assert(rbuf->received == rbuf->alert.sz);
+    return NGX_OK;
   }
 }
 
@@ -372,10 +321,6 @@ typedef struct {
 static void fake_ipc_alert_delay_handler(ngx_event_t *ev) {
   delayed_alert_glob_t *glob = (delayed_alert_glob_t *)ev->data;
   
-  if(ngx_time() - glob->alert.time_sent >= 2) {
-    ipc_record_alert_receive_delay(ngx_time() - glob->alert.time_sent);
-  }
-  
   glob->ipc->handler(glob->alert.src_slot, glob->alert.code, glob->alert.data);
   ngx_free(glob);
 }
@@ -384,70 +329,54 @@ static void fake_ipc_alert_delay_handler(ngx_event_t *ev) {
 static void ipc_read_handler(ngx_event_t *ev) {
   DBG("IPC channel handler");
   //copypasta from os/unix/ngx_process_cycle.c (ngx_channel_handler)
-  ngx_int_t          n;
-  ipc_alert_t        alert;
+  ngx_int_t          rc;
   ngx_connection_t  *c;
+  ipc_process_t     *ipc_proc;
+  ipc_alert_t       *alert;
+  
   if (ev->timedout) {
     ev->timedout = 0;
     return;
   }
   c = ev->data;
+  ipc_proc = &((ipc_t *)c->data)->process[ngx_process_slot];
   
   while(1) {
-    n = ipc_read_socket(c->fd, &alert, ev->log);
-    if (n == NGX_ERROR) {
+    rc = ipc_read_socket(c->fd, &ipc_proc->rbuf, ev->log);
+    if (rc == NGX_ERROR) {
       ERR("IPC_READ_SOCKET failed: bad connection. This should never have happened, yet here we are...");
       assert(0);
       return;
     }
-    if (n == NGX_AGAIN) {
+    else if (rc == NGX_AGAIN) {
       return;
     }
-    //ngx_log_debug1(NGX_LOG_DEBUG_CORE, ev->log, 0, "nchan: channel command: %d", ch.command);
     
-    assert(n == sizeof(alert));
+    assert(ipc_proc->rbuf.complete == 1);
     
-    //if(alert.worker_generation < memstore_worker_generation) {
-    if(0) {
-      ERR("Got IPC alert for previous generation's worker. discarding.");
-    }
-    else {
-#if DEBUG_DELAY_IPC_RECEIVE_ALERT_MSEC
-      delayed_alert_glob_t   *glob = ngx_alloc(sizeof(*glob), ngx_cycle->log);
-      if (NULL == glob) {
-          ERR("Couldn't allocate memory for alert glob data.");
-          return;
-      }
-      ngx_memzero(&glob->timer, sizeof(glob->timer));
-      nchan_init_timer(&glob->timer, fake_ipc_alert_delay_handler, glob);
-      
-      glob->alert = alert;
-      glob->ipc = (ipc_t *)c->data;
-      ngx_add_timer(&glob->timer, DEBUG_DELAY_IPC_RECEIVE_ALERT_MSEC);
-#else
-      if(ngx_time() - alert.time_sent >= 2) {
-        ipc_record_alert_receive_delay(ngx_time() - alert.time_sent);
-      }
-      ((ipc_t *)c->data)->handler(alert.src_slot, alert.code, alert.data);
-#endif
-    }
+    alert = &ipc_proc->rbuf.alert;
+    ((ipc_t *)c->data)->handler(alert->src_slot, alert->code, alert->data, alert->sz);
+    
+    ipc_proc->rbuf.complete = 0;
+    ipc_proc->rbuf.header_received = 0;
+    ipc_proc->rbuf.received = 0;
+    ngx_free(ipc_proc->rbuf.alert.data);
+    ipc_proc->rbuf.alert.data = NULL;
   }
 }
 
 
 ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, size_t data_size) {
-  DBG("IPC send alert code %i to slot %i", code, slot);
   
-  if(data_size > IPC_DATA_SIZE) {
-    ERR("IPC_DATA_SIZE too small. wanted %i, have %i", data_size, IPC_DATA_SIZE);
-    assert(0);
-  }
+  ipc_alert_link_t   *alert_link;
   ipc_process_t      *proc = &ipc->process[slot];
   ipc_writebuf_t     *wb = &proc->wbuf;
   ipc_alert_t        *alert;
   
+  DBG("IPC send alert code %i to slot %i", code, slot);
+  
   if(slot == ngx_process_slot) {
-    ipc->handler(slot, code, data);
+    ipc->handler(slot, code, data, data_size);
     return NGX_OK;
   }
   
@@ -455,36 +384,28 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
     return NGX_ERROR;
   }
   
-  if(wb->n < IPC_WRITEBUF_SIZE) {
-    alert = &wb->alerts[(wb->first + wb->n++) % IPC_WRITEBUF_SIZE];
+  if((alert_link = ngx_alloc(sizeof(*alert_link) + data_size, ngx_cycle->log)) == NULL) {
+    // nomem
+    return NGX_ERROR;
   }
-  else { //overflow
-    ipc_writebuf_overflow_t  *overflow;
-    DBG("writebuf overflow, allocating memory");
-    if((overflow = ngx_alloc(sizeof(*overflow), ngx_cycle->log)) == NULL) {
-      ERR("can't allocate memory for IPC write buffer overflow");
-      return NGX_ERROR;
-    }
-    overflow->next = NULL;
-    alert= &overflow->alert;
-    
-    if(wb->overflow_first == NULL) {
-      wb->overflow_first = overflow;
-    }
-    if(wb->overflow_last) {
-      wb->overflow_last->next = overflow;
-    }
-    wb->overflow_last = overflow;
+  alert_link->next = NULL;
+  alert_link->sent = 0;
+  alert_link->header_sent = 0;
   
-    wb->overflow_n++;
-  }
-  
+  alert = &alert_link->alert;
+  alert->sz = data_size;
   alert->src_slot = ngx_process_slot;
-  alert->time_sent = ngx_time();
   alert->code = code;
-  //alert->worker_generation = memstore_worker_generation;
-  alert->worker_generation = 0;
+  alert->data = (char *)&alert_link[1];
   ngx_memcpy(&alert->data, data, data_size);
+  
+  if(wb->tail != NULL) {
+    wb->tail->next = alert_link;
+  }
+  wb->tail = alert_link;
+  if(wb->head == NULL) {
+    wb->head = alert_link;
+  }
   
   ipc_write_handler(proc->c->write);
   

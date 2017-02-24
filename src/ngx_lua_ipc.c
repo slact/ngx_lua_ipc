@@ -22,7 +22,7 @@ static lua_State       *alert_L = NULL;
 static ngx_int_t        max_workers;
 
 
-static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_uint_t code, void *data);
+static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_uint_t code, void *data, size_t sz);
 
 static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
   shm_data_t         *d;
@@ -128,11 +128,45 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
   return NGX_OK;
 }
 
+/*
+static u_char *ngx_http_lua_log_ipc_error(ngx_log_t *log, u_char *buf, size_t len) {
+  u_char              *p;
+  ngx_connection_t    *c;
 
-static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_uint_t code, void *data) {
-  lua_State *L = alert_L;
-  int i, sender_pid;
-  int found = 0;
+  if (log->action) {
+    p = ngx_snprintf(buf, len, " while %s", log->action);
+    len -= p - buf;
+    buf = p;
+  }
+
+  c = log->data;
+
+  p = ngx_snprintf(buf, len, ", context: ngx.ipc");
+  len -= p - buf;
+  buf = p;
+
+  if (c->addr_text.len) {
+    p = ngx_snprintf(buf, len, ", client: %V", &c->addr_text);
+    len -= p - buf;
+    buf = p;
+  }
+
+  if (c && c->listening && c->listening->addr_text.len) {
+    p = ngx_snprintf(buf, len, ", server: %V", &c->listening->addr_text);
+    // len -= p - buf; 
+    buf = p;
+  }
+
+  return buf;
+}
+*/
+
+
+static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_uint_t code, void *data, size_t sz) {
+  lua_State             *L = alert_L;
+  
+  int                    i, sender_pid;
+  int                    found = 0;
   
   if(!L) {
     //no alert handlers here
@@ -152,12 +186,14 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_uint_t code, vo
   }
   if(found) {
     lua_pushinteger(L, sender_pid);
-    lua_pushstring(L, (char *)data);
+    lua_pushlstring(L, (const char *)data, sz);
     lua_call(L, 2, 0);
   }
   else {
     //uuh....
   }
+  return;
+  
 }
 
 static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
