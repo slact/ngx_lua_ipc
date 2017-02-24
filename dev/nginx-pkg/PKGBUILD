@@ -335,8 +335,8 @@ fi
     
     
     if [[ -n $EXPLICIT_CFLAGS ]]; then
-      echo "./configure ${CONFIGURE[@]} --with-cc-opt=\"${CFLAGS}\"" 
-      ./configure ${CONFIGURE[@]} "$_cc_opt"
+      echo "./configure ${CONFIGURE[@]} --with-cc-opt=${CFLAGS}"
+      ./configure ${CONFIGURE[@]} "--with-cc-opt=${CFLAGS}"
     else
       ./configure ${CONFIGURE[@]}
     fi
