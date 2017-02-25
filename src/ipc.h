@@ -1,6 +1,8 @@
-#define IPC_DATA_SIZE 512
-//#define IPC_DATA_SIZE 80
-
+#define IPC_UINT16_MAXLEN (sizeof("65536")-1)
+#define IPC_UINT32_MAXLEN (sizeof("4294967295")-1)
+#define IPC_MAX_HEADER_LEN (3   + 1 + IPC_UINT16_MAXLEN + 1 + IPC_UINT16_MAXLEN + 1)
+#define IPC_MAX_READBUF_LEN 512
+// <CODE(uint8)>|<SRC_SLOT(uint16)>|<DATA_LEN(uint16)>|<DATA>
 typedef struct {
   uint16_t        sz;
   int16_t         src_slot;
@@ -13,15 +15,6 @@ struct ipc_alert_link_s {
   ipc_alert_t       alert;
   ipc_alert_link_t *next;
   uint16_t          sent;
-  unsigned          header_sent:1;
-};
-
-#define IPC_WRITEBUF_SIZE 32
-
-typedef struct ipc_writebuf_overflow_s ipc_writebuf_overflow_t;
-struct ipc_writebuf_overflow_s {
-  ipc_alert_t               alert;
-  ipc_writebuf_overflow_t  *next;
 };
 
 typedef struct ipc_writebuf_s ipc_writebuf_t;
@@ -34,8 +27,16 @@ struct ipc_writebuf_s {
 typedef struct {
   ipc_alert_t alert;
   uint16_t    received;
-  unsigned    header_received:1;
   unsigned    complete:1;
+  unsigned    header_complete:1;
+  uint8_t     separators_seen;
+  
+  char       *buf;
+  char       *buf_last;
+  char       *cur;
+  char       *last;
+  
+  size_t      read_next_bytes;
 } ipc_readbuf_t;
 
 typedef struct ipc_s ipc_t;
