@@ -135,6 +135,11 @@ ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
       ipc_free_buffered_alert(cur);
     }
     
+    if(proc->rbuf.buf) {
+      free(proc->rbuf.buf);
+      ngx_memzero(&proc->rbuf, sizeof(proc->rbuf));
+    }
+    
     ipc_try_close_fd(&proc->pipe[0]);
     ipc_try_close_fd(&proc->pipe[1]);
     ipc->process[i].active = 0;
