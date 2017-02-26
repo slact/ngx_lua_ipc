@@ -108,12 +108,10 @@ static int ngx_http_lua_ipc_add_event_handler(lua_State * L) {
   luaL_checkstring(L, 1);
   luaL_checktype (L, 2, LUA_TFUNCTION);
   
-  lua_getglobal(L, "_ipc_alert_handlers"); ///ugly!!!
-  
   lua_pushvalue(L, 1);
   lua_pushvalue(L, 2);
   
-  lua_rawset(L, -3);
+  lua_rawset(L, lua_upvalueindex(1));
   
   if(!alert_L) {
     alert_L = L;
@@ -123,18 +121,20 @@ static int ngx_http_lua_ipc_add_event_handler(lua_State * L) {
 }
 
 static int ngx_http_lua_ipc_init_lua_code(lua_State * L) {
-  lua_createtable(L, 0, 3);
+  lua_createtable(L, 0, 4);
   lua_pushcfunction(L, ngx_http_lua_ipc_send_alert);
   lua_setfield(L, -2, "send");
 
   lua_pushcfunction(L, ngx_http_lua_ipc_broadcast_alert);
   lua_setfield(L, -2, "broadcast");
 
-  lua_pushcfunction(L, ngx_http_lua_ipc_add_event_handler);
-  lua_setfield(L, -2, "receive");
+  lua_newtable(L); //handlers table
   
-  lua_newtable(L);
-  lua_setglobal(L, "_ipc_alert_handlers");  //ugly
+  lua_pushvalue(L, -1); //for the closure
+  lua_pushcclosure(L, ngx_http_lua_ipc_add_event_handler, 1);
+  lua_setfield(L, -3, "receive");
+  
+  lua_setfield(L, -2, "handlers");
   return 1;
 }
 
@@ -196,8 +196,15 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
     return;
   }
   
-  lua_getglobal(L, "_ipc_alert_handlers"); ///ugly!!!
   
+  lua_getglobal(L, "require");
+  luaL_checktype(L, -1, LUA_TFUNCTION);
+  lua_pushstring(L, "ngx.ipc");
+  lua_call(L, 1, 1);
+  luaL_checktype(L, -1, LUA_TTABLE);
+  
+  lua_getfield(L, -1, "handlers");
+  luaL_checktype (L, -1, LUA_TTABLE);
   lua_pushlstring(L, (const char*)name->data, name->len);
   
   lua_rawget(L, -2);
