@@ -191,7 +191,19 @@ if [[ -z $NO_MAKE ]]; then
   #  echo "failed generating documentation"; 
   #  exit 1
   #fi
-
+  
+  _src_dir=${MY_PATH}/../src
+  
+  bundle exec hsss --format split \
+    --no-hashes --no-name --no-each --no-count --no-static \
+    --struct ngx_ipc_lua_scripts_t \
+    --scripts ngx_ipc_lua_scripts \
+    "${_src_dir}"/lua/* > "${_src_dir}/ngx_lua_ipc_scripts.h"
+  if ! [ $? -eq 0 ]; then;
+    echo "failed generating redis lua scripts";
+    exit 1
+  fi  
+    
   pushd ./nginx-pkg >/dev/null
   
   _build_nginx

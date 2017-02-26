@@ -1,9 +1,12 @@
 #include <ngx_lua_ipc.h>
 #include <ipc.h>
+#include <shmem.h>
 #include <lauxlib.h>
 #include "ngx_http_lua_api.h"
 
-#include <shmem.h>
+#include "ngx_lua_ipc_scripts.h"
+
+#include <assert.h>
 
 #define DEBUG_LEVEL NGX_LOG_DEBUG
 //#define DEBUG_LEVEL NGX_LOG_WARN
@@ -11,15 +14,30 @@
 #define DBG(fmt, args...) ngx_log_error(DEBUG_LEVEL, ngx_cycle->log, 0, "IPC:" fmt, ##args)
 #define ERR(fmt, args...) ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "IPC:" fmt, ##args)
 
+#ifndef container_of
+#define container_of(ptr, type, member) ({                      \
+        const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
+        (type *)( (char *)__mptr - offsetof(type,member) );})
+#endif
+
+#define ngx_lua_ipc_loadscript(lua_state, name)                 \
+        luaL_loadbuffer(lua_state, ngx_ipc_lua_scripts.name, strlen(ngx_ipc_lua_scripts.name), #name); \
+        lua_call(lua_state, 0, LUA_MULTRET)
+
 static shmem_t         *shm = NULL;
 static shm_data_t      *shdata = NULL;
 
 static ipc_t            ipc_data;
 static ipc_t           *ipc = NULL;
 
-static lua_State       *alert_L = NULL;
+static ngx_event_t     *hacked_listener_timer = NULL;
 
 static ngx_int_t        max_workers;
+
+static struct {
+  ipc_alert_waiting_t  *head;
+  ipc_alert_waiting_t  *tail;
+} received_alerts = {NULL, NULL};
 
 
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
@@ -73,6 +91,111 @@ static ngx_int_t ngx_http_ipc_get_alert_args(lua_State *L, int stack_offset, ngx
   return NGX_OK;
 }
 
+static int ngx_lua_ipc_hacktimer_alert_iterator(lua_State *L) {
+  ipc_alert_waiting_t  *cur = received_alerts.head;
+  if(cur) {
+    received_alerts.head = cur->next;
+    if(received_alerts.tail == cur) {
+      assert(cur->next == NULL);
+      received_alerts.tail = NULL;
+    }
+    
+    lua_pushinteger(L, cur->sender_slot);
+    lua_pushinteger(L, cur->sender_pid);
+    lua_pushlstring (L, (const char *)cur->name.data, cur->name.len);
+    lua_pushlstring (L, (const char *)cur->data.data, cur->data.len);
+    
+    ngx_free(cur);
+  }
+  else {
+    lua_pushnil(L);
+    lua_pushnil(L);
+    lua_pushnil(L);
+    lua_pushnil(L);
+  }
+  return 4;
+}
+
+ngx_event_t *ngx_lua_ipc_get_hacktimer(ngx_msec_t magic_key) {
+  
+  ngx_event_t    *ev;
+  ngx_rbtree_node_t **p, *sentinel=ngx_event_timer_rbtree.sentinel, *temp=ngx_event_timer_rbtree.root;
+  if(temp == sentinel) {
+    return NULL;
+  }
+  while(1) {
+    p = ((ngx_rbtree_key_int_t) (magic_key - temp->key) < 0) ? &temp->left : &temp->right;
+    if (*p == sentinel) {
+      break;
+    }
+    temp = *p;
+  }
+  
+  if(temp != sentinel && temp->key == magic_key) {
+    ev = container_of(temp, ngx_event_t, timer);
+    return ev;
+  }
+  else {
+    return NULL;
+  }
+}
+
+static int ngx_lua_ipc_hacktimer_unique_timeout(lua_State *L, uint32_t *unique_timeout, ngx_msec_t *unique_timeout_key) {
+  uint32_t i;
+  ngx_msec_t timeout_msec, timeout_key;
+  for(i=4596313; i != 0; i++) {
+    lua_pushinteger(L, i);
+    timeout_msec = (ngx_msec_t)(luaL_checknumber(L, -1) * 1000); 
+    //generate the timeout just like the lua call would
+    lua_pop(L, 1);
+    timeout_key = timeout_msec + ngx_current_msec;
+    if(ngx_lua_ipc_get_hacktimer(timeout_key) == NULL) {
+      //no timer exists with this timeout
+      *unique_timeout = i;
+      *unique_timeout_key = timeout_key;
+      return 1;
+    }
+    
+    DBG("timer with timeout %i exists, try again", timeout_msec);
+  }
+  return 0;
+}
+
+static int ngx_lua_ipc_hacktimer_add_and_hack(lua_State *L) {
+  uint32_t        unique_timeout;
+  ngx_msec_t      unique_timeout_key;
+  ngx_event_t    *ev;
+  
+  luaL_checktype (L, 1, LUA_TFUNCTION);
+  
+  if(!ngx_event_timer_rbtree.sentinel) { //tree not ready yet
+    ERR("tree not ready");
+  }
+  
+  lua_getglobal(L, "ngx");
+  lua_getfield(L, -1, "timer");
+  lua_getfield(L, -1, "at");
+  
+  if(!ngx_lua_ipc_hacktimer_unique_timeout(L, &unique_timeout, &unique_timeout_key)) {
+    ERR("couldn't find unique timeout. hack failed.");
+    return 0;
+  }
+  
+  lua_pushinteger(L, unique_timeout);
+  lua_pushvalue(L, 1); //callback function
+  lua_call(L, 2, 0);
+  
+  //now find that crazy timer
+  ev = ngx_lua_ipc_get_hacktimer(unique_timeout_key);
+  assert(ev);
+  ngx_del_timer(ev);
+  ngx_add_timer(ev, 10000000);
+  hacked_listener_timer = ev;
+  
+  return 0;
+}
+
+
 
 static int ngx_http_lua_ipc_send_alert(lua_State *L) {
   int            target_worker = luaL_checknumber(L, 1);
@@ -104,40 +227,99 @@ static int ngx_http_lua_ipc_broadcast_alert(lua_State * L) {
   return 0;
 }
 
-static int ngx_http_lua_ipc_add_event_handler(lua_State * L) {
+static int ngx_http_lua_ipc_add_event_handler(lua_State *L) {
   luaL_checkstring(L, 1);
-  luaL_checktype (L, 2, LUA_TFUNCTION);
+  luaL_checktype(L, 2, LUA_TFUNCTION);
   
   lua_pushvalue(L, 1);
   lua_pushvalue(L, 2);
   
   lua_rawset(L, lua_upvalueindex(1));
   
-  if(!alert_L) {
-    alert_L = L;
+  if(!hacked_listener_timer) {
+    ngx_lua_ipc_loadscript(L, hacktimer);
+    lua_pushcfunction(L, ngx_lua_ipc_hacktimer_alert_iterator);
+    lua_pushcfunction(L, ngx_lua_ipc_hacktimer_add_and_hack);
+    lua_call(L, 2, 0);
   }
   
   return 0;
 }
 
-static int ngx_http_lua_ipc_init_lua_code(lua_State * L) {
-  lua_createtable(L, 0, 4);
-  lua_pushcfunction(L, ngx_http_lua_ipc_send_alert);
-  lua_setfield(L, -2, "send");
-
-  lua_pushcfunction(L, ngx_http_lua_ipc_broadcast_alert);
-  lua_setfield(L, -2, "broadcast");
-
-  lua_newtable(L); //handlers table
+static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
   
-  lua_pushvalue(L, -1); //for the closure
-  lua_pushcclosure(L, ngx_http_lua_ipc_add_event_handler, 1);
-  lua_setfield(L, -3, "receive");
+  ipc_alert_waiting_t *alert;
+  int                  i;
+  ngx_pid_t            sender_pid = NGX_INVALID_PID;
   
-  lua_setfield(L, -2, "handlers");
-  return 1;
+  if(!hacked_listener_timer) {
+    //no alert handlers here
+    return;
+  }
+  
+  alert = ngx_alloc(sizeof(*alert) + name->len + data->len, ngx_cycle->log);
+  assert(alert);
+  
+  //find sender process id
+  for(i=0; i<max_workers; i++) {
+    if(shdata->worker_slots[i].slot == sender_slot) {
+      sender_pid = shdata->worker_slots[i].pid;
+      break;
+    }
+  }
+
+  alert->sender_slot = sender_slot;
+  alert->sender_pid = sender_pid;
+  
+  alert->name.data = (u_char *)&alert[1];
+  alert->name.len = name->len;
+  ngx_memcpy(alert->name.data, name->data, name->len);
+  
+  alert->data.data = alert->name.data + alert->name.len;
+  alert->data.len = data->len;
+  ngx_memcpy(alert->data.data, data->data, data->len);
+  
+  alert->next = NULL;
+  
+  if(received_alerts.tail) {
+    received_alerts.tail->next = alert;
+  }
+  received_alerts.tail = alert;
+  if(!received_alerts.head) {
+    received_alerts.head = alert;
+  }
+  
+  //listener timer now!!
+  ngx_del_timer(hacked_listener_timer);
+  ngx_add_timer(hacked_listener_timer, 0);
+  
+  return;
+  
 }
 
+static int ngx_http_lua_ipc_init_lua_code(lua_State * L) {
+  
+  int t = lua_gettop(L) + 1;
+  lua_createtable(L, 0, 5);
+  lua_pushcfunction(L, ngx_http_lua_ipc_send_alert);
+  lua_setfield(L, t, "send");
+
+  lua_pushcfunction(L, ngx_http_lua_ipc_broadcast_alert);
+  lua_setfield(L, t, "broadcast");
+
+  ngx_lua_ipc_loadscript(L, reply);
+  lua_pushvalue(L, t);
+  lua_call(L, 1, 1);
+  lua_setfield(L, t, "reply");
+  
+  lua_newtable(L); //handlers table
+  lua_pushvalue(L, -1); //for the closure
+  lua_pushcclosure(L, ngx_http_lua_ipc_add_event_handler, 1);
+  lua_setfield(L, t, "receive");
+  
+  lua_setfield(L, t, "handlers");
+  return 1;
+}
 
 static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
   ngx_str_t              name = ngx_string("ngx_lua_ipc");
@@ -150,54 +332,6 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
   
   return NGX_OK;
 }
-
-
-static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
-  lua_State             *L = alert_L;
-  
-  int                    i, sender_pid;
-  int                    found = 0;
-  
-  if(!L) {
-    //no alert handlers here
-    return;
-  }
-  
-  DBG("lua_gettop(L) (start): %i", lua_gettop(L));
-  
-  lua_getglobal(L, "require");
-  luaL_checktype(L, -1, LUA_TFUNCTION);
-  lua_pushstring(L, "ngx.ipc");
-  lua_call(L, 1, 1);
-  luaL_checktype(L, -1, LUA_TTABLE);
-  
-  lua_getfield(L, -1, "handlers");
-  luaL_checktype (L, -1, LUA_TTABLE);
-  lua_pushlstring(L, (const char*)name->data, name->len);
-  
-  lua_rawget(L, -2);
-  
-  for(i=0; i<max_workers; i++) {
-    if(shdata->worker_slots[i].slot == sender_slot) {
-      sender_pid = shdata->worker_slots[i].pid;
-      found = 1;
-      break;
-    }
-  }
-  if(found) {
-    lua_pushinteger(L, sender_pid);
-    lua_pushlstring(L, (const char *)data->data, data->len);
-    lua_call(L, 2, 0);
-  }
-  else {
-    //uuh....
-  }
-  
-  DBG("lua_gettop(L) (end): %i", lua_gettop(L));
-  return;
-  
-}
-
 static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
   ngx_core_conf_t                *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
   
