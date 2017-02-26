@@ -18,6 +18,9 @@ ipc.receive(ipc_alert_name, function(sender, data)
   --ipc receiver function for all alerts with string name ipc_alert_name
 end)
 
+ipc.reply(alert_name, data_string)
+  --reply to alert sender. works only when in an alert receiver handler function
+  
 ipc.send(destination_worker_pid, ipc_alert_name, data_string)
 
 ipc.broadcast(ipc_alert_name, data_string)
@@ -33,13 +36,19 @@ usage:
 
 http {
 
-  init_by_lua '
+  init_worker_by_lua_block {
     local ipc = require "ngx.ipc"
     ipc.receive("hello", function(sender, data)
       ngx.log(ngx.ALERT, ("%d says %s"):format(sender, data))
+      
+      ipc.reply("hello-reply", "hello to you too")
+      
     end)
     
-  ';
+    ipc.receive("reply", function(sender, data) 
+      ngx.log(ngx.ALERT, ("%d replied %s"):format(sender, data))
+    end) 
+  }
   
   server {
     listen       80;
@@ -47,18 +56,18 @@ http {
     location ~ /send/(\d+)/(.*)$ {
       set $dst_pid $1;
       set $data $2;
-      content_by_lua '
+      content_by_lua_block {
         local ipc = require "ngx.ipc"
         ipc.send(ngx.var.dst_pid, "hello", ngx.var.data)
-      ';
+      }
     }
     
     location ~ /broadcast/(.*)$ {
       set $data $1;
-      content_by_lua '
+      content_by_lua_block { 
         local ipc = require "ngx.ipc"
         ipc.broadcast("hello", ngx.var.data)
-      ';
+      }
     }
     
   }
