@@ -148,15 +148,14 @@ ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
 }
 
 
-static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *alert_link) {
+static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *alert) {
   int          n;
   ngx_int_t    err;
   uint16_t     unsent;
-  ipc_alert_t *alert = &alert_link->alert;
-  char        *data;
+  u_char      *data;
  
-  unsent = alert->sz - alert_link->sent;
-  data = &alert->data[alert_link->sent];
+  unsent = alert->buf.len - alert->sent;
+  data = &alert->buf.data[alert->sent];
   
   n = write(fd, data, unsent);
   if (n == -1) {
@@ -171,7 +170,7 @@ static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *ale
     return NGX_ERROR;
   }
   else if (n < unsent) {
-    alert_link->sent += n;
+    alert->sent += n;
     return NGX_AGAIN;
   }
   
@@ -288,15 +287,10 @@ static void alloc_buf_copy(ipc_readbuf_t *rbuf, size_t size) {
 
 static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf) {
   
-  rbuf->alert.sz = 0;
-  rbuf->alert.src_slot = 0;
-  rbuf->alert.data = NULL;
-  rbuf->alert.code = 0;
+  ngx_memzero(&rbuf->header, sizeof(rbuf->header));
+  ngx_memzero(&rbuf->body, sizeof(rbuf->body));
   
-  rbuf->received = 0;
   rbuf->complete = 0;
-  rbuf->header_complete = 0;
-  rbuf->separators_seen = 0;
   
   if(rbuf->buf) {
     if(rbuf->last == rbuf->cur) {
@@ -329,23 +323,23 @@ static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf) {
 }
 
 static ngx_int_t parsebuf_need_data(ipc_readbuf_t *rbuf) {
-  assert(rbuf->header_complete);
+  assert(rbuf->header.complete);
   
   size_t sz = rbuf->last - rbuf->cur, freesz = rbuf->last - rbuf->buf_last;
   
-  if(rbuf->alert.sz <= sz){
+  if(rbuf->body.len <= sz){
     //we already have the alert data
     rbuf->read_next_bytes = 0;
     return NGX_AGAIN;
   }
-  else if(rbuf->alert.sz <= sz + freesz) {
+  else if(rbuf->body.len <= sz + freesz) {
     // maybe have some data, but not enough
-    rbuf->read_next_bytes = rbuf->alert.sz - sz;
+    rbuf->read_next_bytes = rbuf->body.len - sz;
     return NGX_OK;
   }
   else {
-    alloc_buf_copy(rbuf, rbuf->alert.sz);
-    rbuf->read_next_bytes = rbuf->alert.sz - (rbuf->last - rbuf->cur);
+    alloc_buf_copy(rbuf, rbuf->body.len);
+    rbuf->read_next_bytes = rbuf->body.len - (rbuf->last - rbuf->cur);
     return NGX_OK;
   }
 }
@@ -356,7 +350,7 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
   char *last = rbuf->last;
   size_t used;
   
-  if(!rbuf->header_complete) {
+  if(!rbuf->header.complete) {
     cur = (char *)ngx_strlchr((u_char *)cur, (u_char *)last, '|');
     if(!cur) {
       //need more data
@@ -366,18 +360,18 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
     }
     else if(cur) {
       *cur='\0';
-      if(rbuf->separators_seen == 0){
-        rbuf->alert.code = atoi(rbuf->cur);
+      if(rbuf->header.separators_seen == 0){
+        rbuf->header.code = atoi(rbuf->cur);
       }
-      else if(rbuf->separators_seen == 1){
-        rbuf->alert.src_slot = atoi(rbuf->cur);
+      else if(rbuf->header.separators_seen == 1){
+        rbuf->header.src_slot = atoi(rbuf->cur);
       }
-      else if(rbuf->separators_seen == 2){
-        rbuf->alert.sz = atoi(rbuf->cur);
-        rbuf->header_complete = 1;
+      else if(rbuf->header.separators_seen == 2){
+        rbuf->body.len = atoi(rbuf->cur);
+        rbuf->header.complete = 1;
       }
       *cur='|'; //change it back for debugging
-      rbuf->separators_seen ++;
+      rbuf->header.separators_seen ++;
       
       used = (cur+1) - rbuf->cur;
       rbuf->cur += used;
@@ -386,9 +380,9 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
     }
   }
   else {
-    if(rbuf->alert.sz <= rbuf->last - rbuf->cur) {
-      ipc->handler(rbuf->alert.src_slot, rbuf->alert.code, rbuf->cur, rbuf->alert.sz);
-      rbuf->cur += rbuf->alert.sz;
+    if((ssize_t )rbuf->body.len <= rbuf->last - rbuf->cur) {
+      ipc->handler(rbuf->header.src_slot, rbuf->header.code, rbuf->cur, rbuf->body.len);
+      rbuf->cur += rbuf->body.len;
       return parsebuf_reset_readbuf(rbuf);
     }
     else {
@@ -468,10 +462,9 @@ static void ipc_read_handler(ngx_event_t *ev) {
 
 ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, size_t data_size) {
   
-  ipc_alert_link_t   *alert_link;
+  ipc_alert_link_t   *alert;
   ipc_process_t      *proc = &ipc->process[slot];
   ipc_writebuf_t     *wb = &proc->wbuf;
-  ipc_alert_t        *alert;
   size_t              alert_str_size = 0;
   u_char             *end;
   
@@ -489,30 +482,28 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
   }
 
   alert_str_size +=   IPC_MAX_HEADER_LEN + data_size;
-  if((alert_link = ngx_alloc(sizeof(*alert_link) + alert_str_size, ngx_cycle->log)) == NULL) {
+  if((alert = ngx_alloc(sizeof(*alert) + alert_str_size, ngx_cycle->log)) == NULL) {
     // nomem
     return NGX_ERROR;
   }
-  alert_link->next = NULL;
-  alert_link->sent = 0;
+  alert->next = NULL;
+  alert->sent = 0;
   
-  alert = &alert_link->alert;
-  
-  alert->data = (char *)&alert_link[1];
+  alert->buf.data = (u_char *)&alert[1];
   
   data_str.len = data_size;
   data_str.data = (u_char *)data;
   
-  end = ngx_snprintf((u_char *)alert->data, alert_str_size, "%i|%i|%i|%V", code, ngx_process_slot, data_str.len, &data_str);
+  end = ngx_snprintf(alert->buf.data, alert_str_size, "%i|%i|%i|%V", code, ngx_process_slot, data_str.len, &data_str);
   
-  alert->sz = end - (u_char *)alert->data;
+  alert->buf.len = end - alert->buf.data;
   
   if(wb->tail != NULL) {
-    wb->tail->next = alert_link;
+    wb->tail->next = alert;
   }
-  wb->tail = alert_link;
+  wb->tail = alert;
   if(wb->head == NULL) {
-    wb->head = alert_link;
+    wb->head = alert;
   }
   ipc_write_handler(proc->c->write);
   

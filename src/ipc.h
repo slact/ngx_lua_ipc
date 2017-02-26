@@ -3,17 +3,11 @@
 #define IPC_MAX_HEADER_LEN (3   + 1 + IPC_UINT16_MAXLEN + 1 + IPC_UINT16_MAXLEN + 1)
 #define IPC_MAX_READBUF_LEN 512
 // <CODE(uint8)>|<SRC_SLOT(uint16)>|<DATA_LEN(uint16)>|<DATA>
-typedef struct {
-  uint16_t        sz;
-  int16_t         src_slot;
-  char           *data;
-  uint8_t         code;
-} ipc_alert_t;
 
 typedef struct ipc_alert_link_s ipc_alert_link_t;
 struct ipc_alert_link_s {
-  ipc_alert_t       alert;
   ipc_alert_link_t *next;
+  ngx_str_t         buf;
   uint16_t          sent;
 };
 
@@ -25,11 +19,16 @@ struct ipc_writebuf_s {
 }; //ipc_writebuf_t
 
 typedef struct {
-  ipc_alert_t alert;
-  uint16_t    received;
+  struct {
+    size_t   code;
+    uint16_t src_slot;
+    uint8_t  separators_seen;
+    unsigned complete:1;
+  }           header;
+  
+  ngx_str_t   body;
+  
   unsigned    complete:1;
-  unsigned    header_complete:1;
-  uint8_t     separators_seen;
   
   char       *buf;
   char       *buf_last;
