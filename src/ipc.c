@@ -384,9 +384,7 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
     if(rbuf->alert.sz <= rbuf->last - rbuf->cur) {
       ipc->handler(rbuf->alert.src_slot, rbuf->alert.code, rbuf->cur, rbuf->alert.sz);
       rbuf->cur += rbuf->alert.sz;
-      if(rbuf->cur == rbuf->last) {
-        return parsebuf_reset_readbuf(rbuf);
-      }
+      return parsebuf_reset_readbuf(rbuf);
     }
     else {
       return parsebuf_need_data(rbuf);
@@ -486,35 +484,33 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
   }
 
   alert_str_size +=   IPC_MAX_HEADER_LEN + data_size;
-  
-  if((alert_link = ngx_alloc(sizeof(*alert_link) + alert_str_size, ngx_cycle->log)) == NULL) {
-    // nomem
-    return NGX_ERROR;
+  for(int i=0; i<3;i++) {
+    if((alert_link = ngx_alloc(sizeof(*alert_link) + alert_str_size, ngx_cycle->log)) == NULL) {
+      // nomem
+      return NGX_ERROR;
+    }
+    alert_link->next = NULL;
+    alert_link->sent = 0;
+    
+    alert = &alert_link->alert;
+    
+    alert->data = (char *)&alert_link[1];
+    
+    data_str.len = data_size;
+    data_str.data = (u_char *)data;
+    
+    end = ngx_snprintf((u_char *)alert->data, alert_str_size, "%i|%i|%i|%V", code, ngx_process_slot, data_str.len, &data_str);
+    
+    alert->sz = end - (u_char *)alert->data;
+    
+    if(wb->tail != NULL) {
+      wb->tail->next = alert_link;
+    }
+    wb->tail = alert_link;
+    if(wb->head == NULL) {
+      wb->head = alert_link;
+    }
   }
-  alert_link->next = NULL;
-  alert_link->sent = 0;
-  
-  alert = &alert_link->alert;
-  
-  alert->data = (char *)&alert_link[1];
-  
-  data_str.len = data_size;
-  data_str.data = (u_char *)data;
-  
-  
-  
-  end = ngx_snprintf((u_char *)alert->data, alert_str_size, "%i|%i|%i|%V", code, ngx_process_slot, data_str.len, &data_str);
-  
-  alert->sz = end - (u_char *)alert->data;
-  
-  if(wb->tail != NULL) {
-    wb->tail->next = alert_link;
-  }
-  wb->tail = alert_link;
-  if(wb->head == NULL) {
-    wb->head = alert_link;
-  }
-  
   ipc_write_handler(proc->c->write);
   
   //ngx_handle_write_event(ipc->c[slot]->write, 0);
