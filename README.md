@@ -2,7 +2,7 @@ Interprocess communication for lua_nginx_module and openresty.
 
 I wrote this as a quick hack to separate the [interprocess code](https://github.com/slact/nchan/tree/master/src/store/memory) out of [Nchan](https://github.com/slact/nchan) mostly on a flight back from Nginx Conf 2016.
 
-The completion of this module was generously sponsored by [ring.com](httos://ring.com). Thanks guys!
+The completion of this module was generously sponsored by [ring.com](https://ring.com). Thanks guys!
 
 This is a **work-in-progress**. There are limitations on the use of this thing, and the API is liable to change.
 The receiving lua VM does not yet run in a proper coroutine.
