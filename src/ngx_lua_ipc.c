@@ -151,39 +151,6 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
   return NGX_OK;
 }
 
-/*
-static u_char *ngx_http_lua_log_ipc_error(ngx_log_t *log, u_char *buf, size_t len) {
-  u_char              *p;
-  ngx_connection_t    *c;
-
-  if (log->action) {
-    p = ngx_snprintf(buf, len, " while %s", log->action);
-    len -= p - buf;
-    buf = p;
-  }
-
-  c = log->data;
-
-  p = ngx_snprintf(buf, len, ", context: ngx.ipc");
-  len -= p - buf;
-  buf = p;
-
-  if (c->addr_text.len) {
-    p = ngx_snprintf(buf, len, ", client: %V", &c->addr_text);
-    len -= p - buf;
-    buf = p;
-  }
-
-  if (c && c->listening && c->listening->addr_text.len) {
-    p = ngx_snprintf(buf, len, ", server: %V", &c->listening->addr_text);
-    // len -= p - buf; 
-    buf = p;
-  }
-
-  return buf;
-}
-*/
-
 
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
   lua_State             *L = alert_L;
@@ -196,6 +163,7 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
     return;
   }
   
+  DBG("lua_gettop(L) (start): %i", lua_gettop(L));
   
   lua_getglobal(L, "require");
   luaL_checktype(L, -1, LUA_TFUNCTION);
@@ -224,6 +192,8 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   else {
     //uuh....
   }
+  
+  DBG("lua_gettop(L) (end): %i", lua_gettop(L));
   return;
   
 }
