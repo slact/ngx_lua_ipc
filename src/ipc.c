@@ -383,7 +383,7 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
     if((ssize_t )rbuf->body.len <= rbuf->last - rbuf->cur) {
       ngx_str_t name, data;
       
-      rbuf->body.data = cur;
+      rbuf->body.data = (u_char *)cur;
       
       name.data = rbuf->body.data;
       name.len = rbuf->header.name_len;

@@ -105,7 +105,7 @@ static int ngx_http_lua_ipc_broadcast_alert(lua_State * L) {
 }
 
 static int ngx_http_lua_ipc_add_event_handler(lua_State * L) {
-  const char    *data = luaL_checkstring(L, 1);
+  luaL_checkstring(L, 1);
   luaL_checktype (L, 2, LUA_TFUNCTION);
   
   lua_getglobal(L, "_ipc_alert_handlers"); ///ugly!!!
@@ -137,7 +137,6 @@ static int ngx_http_lua_ipc_init_lua_code(lua_State * L) {
   lua_setglobal(L, "_ipc_alert_handlers");  //ugly
   return 1;
 }
-
 
 
 static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
