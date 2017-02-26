@@ -1,8 +1,8 @@
 #define IPC_UINT16_MAXLEN (sizeof("65536")-1)
 #define IPC_UINT32_MAXLEN (sizeof("4294967295")-1)
-#define IPC_MAX_HEADER_LEN (3   + 1 + IPC_UINT16_MAXLEN + 1 + IPC_UINT16_MAXLEN + 1)
+#define IPC_MAX_HEADER_LEN (IPC_UINT16_MAXLEN   + 1 + IPC_UINT32_MAXLEN + 1 + IPC_UINT16_MAXLEN + 1)
 #define IPC_MAX_READBUF_LEN 512
-// <CODE(uint8)>|<SRC_SLOT(uint16)>|<DATA_LEN(uint16)>|<DATA>
+// <SRC_SLOT(uint16)>|<NAME&DATA_LEN(uint32)>|<NAME_LEN(uint16)>|<NAME><DATA>
 
 typedef struct ipc_alert_link_s ipc_alert_link_t;
 struct ipc_alert_link_s {
@@ -21,6 +21,7 @@ struct ipc_writebuf_s {
 typedef struct {
   struct {
     size_t   code;
+    size_t   name_len;
     uint16_t src_slot;
     uint8_t  separators_seen;
     unsigned complete:1;
@@ -54,13 +55,13 @@ struct ipc_s {
   
   ipc_process_t         process[NGX_MAX_PROCESSES];
   
-  void                  (*handler)(ngx_int_t, ngx_uint_t, void*, size_t sz);
+  void                  (*handler)(ngx_int_t, ngx_str_t *, ngx_str_t *);
 }; //ipc_t
 
 ngx_int_t ipc_init(ipc_t *ipc);
 ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker));
-ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_uint_t , void *data, size_t));
+ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_str_t *, ngx_str_t *));
 ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle);
 ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle);
 
-ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code,  void *data, size_t data_size);
+ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data);

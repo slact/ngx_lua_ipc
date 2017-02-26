@@ -22,7 +22,7 @@ static lua_State       *alert_L = NULL;
 static ngx_int_t        max_workers;
 
 
-static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_uint_t code, void *data, size_t sz);
+static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
 
 static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
   shm_data_t         *d;
@@ -51,17 +51,40 @@ static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
   return NGX_OK;
 }
 
+ngx_int_t luaL_checklstring_as_ngx_str(lua_State *L, int n, ngx_str_t *str) {
+  size_t         data_sz;
+  const char    *data = luaL_checklstring(L, n, &data_sz);
+  
+  str->data = (u_char *)data;
+  str->len = data_sz;
+  return NGX_OK;
+}
+
+static ngx_int_t ngx_http_ipc_get_alert_args(lua_State *L, int stack_offset, ngx_str_t *name, ngx_str_t *data) {
+  luaL_checklstring_as_ngx_str(L, 1+stack_offset, name);
+  if(lua_gettop(L) >= 2+stack_offset) {
+    luaL_checklstring_as_ngx_str(L, 2+stack_offset, data);
+  }
+  else {
+    data->len=0;
+    data->data=NULL;
+  }
+  
+  return NGX_OK;
+}
+
 
 static int ngx_http_lua_ipc_send_alert(lua_State *L) {
   int            target_worker = luaL_checknumber(L, 1);
-  int            alert_code = luaL_checknumber(L, 2);
-  size_t         data_sz;
-  const char    *data = luaL_checklstring(L, 3, &data_sz);
+  
+  ngx_str_t      name, data;
+  ngx_http_ipc_get_alert_args(L, 1, &name, &data);
+  
   int            i;
   
   for(i=0; i<max_workers; i++) {
     if(shdata->worker_slots[i].pid == target_worker) {
-      ipc_alert(ipc, shdata->worker_slots[i].slot, alert_code, (void *)data, data_sz);
+      ipc_alert(ipc, shdata->worker_slots[i].slot, &name, &data);
       break;
     }
   }
@@ -69,27 +92,28 @@ static int ngx_http_lua_ipc_send_alert(lua_State *L) {
 }
 
 static int ngx_http_lua_ipc_broadcast_alert(lua_State * L) {
-  int            alert_code = luaL_checknumber(L, 1);
-  size_t         data_sz;
-  const char    *data = luaL_checklstring(L, 2, &data_sz);
+  ngx_str_t      name, data;
+  
+  ngx_http_ipc_get_alert_args(L, 0, &name, &data);
   int            i;
   
   for(i=0; i<max_workers; i++) {
-    ipc_alert(ipc, shdata->worker_slots[i].slot, alert_code, (void *)data, data_sz);
+    ipc_alert(ipc, shdata->worker_slots[i].slot, &name, &data);
   }
   
   return 0;
 }
 
 static int ngx_http_lua_ipc_add_event_handler(lua_State * L) {
-  int            alert_code = luaL_checknumber(L, 1);
+  const char    *data = luaL_checkstring(L, 1);
   luaL_checktype (L, 2, LUA_TFUNCTION);
   
   lua_getglobal(L, "_ipc_alert_handlers"); ///ugly!!!
   
+  lua_pushvalue(L, 1);
   lua_pushvalue(L, 2);
   
-  lua_rawseti(L, -2, alert_code);
+  lua_rawset(L, -3);
   
   if(!alert_L) {
     alert_L = L;
@@ -162,7 +186,7 @@ static u_char *ngx_http_lua_log_ipc_error(ngx_log_t *log, u_char *buf, size_t le
 */
 
 
-static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_uint_t code, void *data, size_t sz) {
+static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
   lua_State             *L = alert_L;
   
   int                    i, sender_pid;
@@ -175,7 +199,9 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_uint_t code, vo
   
   lua_getglobal(L, "_ipc_alert_handlers"); ///ugly!!!
   
-  lua_rawgeti(L, -1, code);
+  lua_pushlstring(L, (const char*)name->data, name->len);
+  
+  lua_rawget(L, -2);
   
   for(i=0; i<max_workers; i++) {
     if(shdata->worker_slots[i].slot == sender_slot) {
@@ -186,7 +212,7 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_uint_t code, vo
   }
   if(found) {
     lua_pushinteger(L, sender_pid);
-    lua_pushlstring(L, (const char *)data, sz);
+    lua_pushlstring(L, (const char *)data->data, data->len);
     lua_call(L, 2, 0);
   }
   else {

@@ -34,7 +34,7 @@ ngx_int_t ipc_init(ipc_t *ipc) {
   return NGX_OK;
 }
 
-ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_uint_t, void *, size_t)) {
+ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_str_t *, ngx_str_t *)) {
   ipc->handler=alert_handler;
   return NGX_OK;
 }
@@ -361,13 +361,13 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
     else if(cur) {
       *cur='\0';
       if(rbuf->header.separators_seen == 0){
-        rbuf->header.code = atoi(rbuf->cur);
-      }
-      else if(rbuf->header.separators_seen == 1){
         rbuf->header.src_slot = atoi(rbuf->cur);
       }
-      else if(rbuf->header.separators_seen == 2){
+      else if(rbuf->header.separators_seen == 1){
         rbuf->body.len = atoi(rbuf->cur);
+      }
+      else if(rbuf->header.separators_seen == 2){
+        rbuf->header.name_len = atoi(rbuf->cur);
         rbuf->header.complete = 1;
       }
       *cur='|'; //change it back for debugging
@@ -381,7 +381,17 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
   }
   else {
     if((ssize_t )rbuf->body.len <= rbuf->last - rbuf->cur) {
-      ipc->handler(rbuf->header.src_slot, rbuf->header.code, rbuf->cur, rbuf->body.len);
+      ngx_str_t name, data;
+      
+      rbuf->body.data = cur;
+      
+      name.data = rbuf->body.data;
+      name.len = rbuf->header.name_len;
+      
+      data.data = name.data + name.len;
+      data.len = rbuf->body.len - name.len;
+      
+      ipc->handler(rbuf->header.src_slot, &name, &data);
       rbuf->cur += rbuf->body.len;
       return parsebuf_reset_readbuf(rbuf);
     }
@@ -456,11 +466,10 @@ static void ipc_read_handler(ngx_event_t *ev) {
 
   
 // This is what an alert string looks like:
-// <CODE(uint8)>|<SRC_SLOT(uint16)>|<DATA_LEN(uint16)>|<DATA>
+// <SRC_SLOT(uint16)>|<NAME&DATA_LEN(uint32)>|<NAME_LEN(uint16)>|<NAME><DATA>
 
 
-
-ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, size_t data_size) {
+ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data) {
   
   ipc_alert_link_t   *alert;
   ipc_process_t      *proc = &ipc->process[slot];
@@ -468,12 +477,18 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
   size_t              alert_str_size = 0;
   u_char             *end;
   
-  ngx_str_t           data_str;
+  ngx_str_t           empty = {0, NULL};
+  if(!name) {
+    name = &empty;
+  }
+  if(!data) {
+    data = &empty;
+  }
   
-  DBG("IPC send alert code %i to slot %i", code, slot);
+  DBG("IPC send alert '%V' (data:'%V') to slot %i", name, data, slot);
   
   if(slot == ngx_process_slot) {
-    ipc->handler(slot, code, data, data_size);
+    ipc->handler(slot, name, data);
     return NGX_OK;
   }
   
@@ -481,7 +496,7 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
     return NGX_ERROR;
   }
 
-  alert_str_size +=   IPC_MAX_HEADER_LEN + data_size;
+  alert_str_size +=   IPC_MAX_HEADER_LEN + data->len + name->len;
   if((alert = ngx_alloc(sizeof(*alert) + alert_str_size, ngx_cycle->log)) == NULL) {
     // nomem
     return NGX_ERROR;
@@ -491,10 +506,7 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_uint_t code, void *data, siz
   
   alert->buf.data = (u_char *)&alert[1];
   
-  data_str.len = data_size;
-  data_str.data = (u_char *)data;
-  
-  end = ngx_snprintf(alert->buf.data, alert_str_size, "%i|%i|%i|%V", code, ngx_process_slot, data_str.len, &data_str);
+  end = ngx_snprintf(alert->buf.data, alert_str_size, "%i|%i|%i|%V%V", ngx_process_slot, data->len + name->len, name->len, name, data);
   
   alert->buf.len = end - alert->buf.data;
   
