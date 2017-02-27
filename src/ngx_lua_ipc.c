@@ -105,7 +105,7 @@ ngx_int_t luaL_checklstring_as_ngx_str(lua_State *L, int n, ngx_str_t *str) {
   return NGX_OK;
 }
 
-static ngx_int_t ngx_http_ipc_get_alert_args(lua_State *L, int stack_offset, ngx_str_t *name, ngx_str_t *data) {
+static ngx_int_t ngx_lua_ipc_get_alert_args(lua_State *L, int stack_offset, ngx_str_t *name, ngx_str_t *data) {
   luaL_checklstring_as_ngx_str(L, 1+stack_offset, name);
   if(lua_gettop(L) >= 2+stack_offset) {
     luaL_checklstring_as_ngx_str(L, 2+stack_offset, data);
@@ -233,11 +233,11 @@ static int ngx_lua_ipc_hacktimer_add_and_hack(lua_State *L) {
   return 0;
 }
 
-static int ngx_http_lua_ipc_send_alert(lua_State *L) {
+static int ngx_lua_ipc_send_alert(lua_State *L) {
   int            target_worker = luaL_checknumber(L, 1);
   
   ngx_str_t      name, data;
-  ngx_http_ipc_get_alert_args(L, 1, &name, &data);
+  ngx_lua_ipc_get_alert_args(L, 1, &name, &data);
   
   int            i;
   
@@ -250,10 +250,10 @@ static int ngx_http_lua_ipc_send_alert(lua_State *L) {
   return 0;
 }
 
-static int ngx_http_lua_ipc_broadcast_alert(lua_State * L) {
+static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
   ngx_str_t      name, data;
   
-  ngx_http_ipc_get_alert_args(L, 0, &name, &data);
+  ngx_lua_ipc_get_alert_args(L, 0, &name, &data);
   int            i;
   
   for(i=0; i<max_workers; i++) {
@@ -319,14 +319,14 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   
 }
 
-static int ngx_http_lua_ipc_init_lua_code(lua_State * L) {
+static int ngx_lua_ipc_init_lua_code(lua_State * L) {
   
   int t = lua_gettop(L) + 1;
   lua_createtable(L, 0, 5);
-  lua_pushcfunction(L, ngx_http_lua_ipc_send_alert);
+  lua_pushcfunction(L, ngx_lua_ipc_send_alert);
   lua_setfield(L, t, "send");
 
-  lua_pushcfunction(L, ngx_http_lua_ipc_broadcast_alert);
+  lua_pushcfunction(L, ngx_lua_ipc_broadcast_alert);
   lua_setfield(L, t, "broadcast");
 
   ngx_lua_ipc_loadscript(L, reply);
@@ -352,7 +352,7 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
 
   shm = shm_create(&name, &ngx_lua_ipc_module, cf, 1024*1024, initialize_shm, &ngx_lua_ipc_module);
   
-  if (ngx_http_lua_add_package_preload(cf, "ngx.ipc", ngx_http_lua_ipc_init_lua_code) != NGX_OK) {
+  if (ngx_http_lua_add_package_preload(cf, "ngx.ipc", ngx_lua_ipc_init_lua_code) != NGX_OK) {
     return NGX_ERROR;
   }
   
