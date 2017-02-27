@@ -40,6 +40,26 @@ static struct {
 } received_alerts = {NULL, NULL};
 
 
+typedef struct {
+  ngx_event_handler_pt   original_handler;
+  void                  *original_privdata;
+} hacked_listener_timer_data_t;
+
+static hacked_listener_timer_data_t hacked_listener_timer_data;
+static int running_hacked_timer_handler = 0;
+
+static void hacked_listener_timer_handler(ngx_event_t *ev) {
+  assert(ev->data == &hacked_listener_timer_data);
+  hacked_listener_timer = NULL; //it's about to be deleted (and a new one added), might as well clear it right now.
+  
+  ev->handler = hacked_listener_timer_data.original_handler;
+  ev->data = hacked_listener_timer_data.original_privdata;
+  
+  running_hacked_timer_handler=1;
+  ev->handler(ev);
+  running_hacked_timer_handler=0;
+}
+
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
 
 static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
@@ -188,8 +208,16 @@ static int ngx_lua_ipc_hacktimer_add_and_hack(lua_State *L) {
   //now find that crazy timer
   ev = ngx_lua_ipc_get_hacktimer(unique_timeout_key);
   assert(ev);
+  
+  hacked_listener_timer_data.original_handler=ev->handler;
+  hacked_listener_timer_data.original_privdata=ev->data;
+  
+  ev->data = &hacked_listener_timer_data;
+  ev->handler = hacked_listener_timer_handler;
+  
   ngx_del_timer(ev);
   ngx_add_timer(ev, 10000000);
+  DBG("set hacked timer %p (prev %p)", ev, hacked_listener_timer);
   hacked_listener_timer = ev;
   
   return 0;
@@ -236,7 +264,7 @@ static int ngx_http_lua_ipc_add_event_handler(lua_State *L) {
   
   lua_rawset(L, lua_upvalueindex(1));
   
-  if(!hacked_listener_timer) {
+  if(!running_hacked_timer_handler && !hacked_listener_timer) {
     ngx_lua_ipc_loadscript(L, hacktimer);
     lua_pushcfunction(L, ngx_lua_ipc_hacktimer_alert_iterator);
     lua_pushcfunction(L, ngx_lua_ipc_hacktimer_add_and_hack);
@@ -252,7 +280,7 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   int                  i;
   ngx_pid_t            sender_pid = NGX_INVALID_PID;
   
-  if(!hacked_listener_timer) {
+  if(!hacked_listener_timer && !running_hacked_timer_handler) {
     //no alert handlers here
     return;
   }
@@ -290,9 +318,14 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   }
   
   //listener timer now!!
-  ngx_del_timer(hacked_listener_timer);
-  ngx_add_timer(hacked_listener_timer, 0);
-  
+  if(hacked_listener_timer) {
+    DBG("run hacked timer now: %p", hacked_listener_timer);
+    ngx_del_timer(hacked_listener_timer);
+    ngx_add_timer(hacked_listener_timer, 0);
+  }
+  else {
+    assert(running_hacked_timer_handler == 1);
+  }
   return;
   
 }
