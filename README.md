@@ -9,7 +9,7 @@ API:
 local ipc = require "ngx.ipc"
 ```
 
-## ipc.receive
+## `ipc.receive`
 
 Register one or several alert handlers. 
 Note that `receive` cannot be used in the `init_by_lua*` context. During startup, use `init_worker_by_lua*`.
@@ -33,37 +33,37 @@ ipc.receive({
 })
 ```
 
-delete alert handler
+delete alert handler:
 ```lua
 ipc.receive(ipc_alert_name, nil)
 ```
 
 Alerts received without a handler are discarded.
 
-## ipc.reply
+## `ipc.reply`
 
 reply to alert sender. works only when in an alert receiver handler function
 
-```nginx
+```lua
   ipc.receive("hello", function(data)
     ipc.reply("hello-response", "hi, you said "..data)
   end)
 ```
 
-## ipc.send
+## `ipc.send`
 
 send alert tp another worker
 ```lua
 ipc.send(destination_worker_pid, ipc_alert_name, data_string)
 ```
 
-## ipc.broadcast
+## `ipc.broadcast`
 broadcast alert to all workers (including sender)
 ```lua
-ipc.broadcast(ipc_alert_name, data_string)
+ipc.broadcast(alert_name, data_string)
 ```
 
-##ipc.sender
+## `ipc.sender`
 when receiving an alert, ipc.sender contains sender process id.
 all other times, it is nil
 ```lua
@@ -82,15 +82,15 @@ http {
 
   init_worker_by_lua_block {
     local ipc = require "ngx.ipc"
-    ipc.receive("hello", function(sender, data)
-      ngx.log(ngx.ALERT, ("%d says %s"):format(sender, data))
+    ipc.receive("hello", function(data)
+      ngx.log(ngx.ALERT, "sender" .. ipc.sender .. " says " .. data)
       
       ipc.reply("reply", "hello to you too. you said " .. data)
       
     end)
     
-    ipc.receive("reply", function(sender, data) 
-      ngx.log(ngx.ALERT, ("%d replied %s"):format(sender, data))
+    ipc.receive("reply", function(data) 
+      ngx.log(ngx.ALERT, tostring(ipc.sender) .. " replied " .. data)
     end) 
   }
   
