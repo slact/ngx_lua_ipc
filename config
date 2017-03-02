@@ -12,7 +12,13 @@ _NGX_LUA_IPC_SRCS="\
 
 ngx_module_incs=$ngx_addon_dir/src
 
-have=NGX_HTTP_HEADERS . auto/have
+have=auto/have
+
+case "$STREAM_MODULES" in 
+  *ngx_stream_lua_module*)
+    CFLAGS="$CFLAGS -DNGX_LUA_IPC_STREAM_MODULE"
+    ;;
+esac
 
 if test -n "$ngx_module_link"; then
   ngx_module_type=HTTP

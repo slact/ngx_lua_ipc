@@ -2,6 +2,7 @@
 #include <ipc.h>
 #include <shmem.h>
 #include <lauxlib.h>
+#include "ngx_stream_lua_api.h"
 #include "ngx_http_lua_api.h"
 
 #include "ngx_lua_ipc_scripts.h"
@@ -356,6 +357,13 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
     return NGX_ERROR;
   }
   
+  
+#ifdef NGX_LUA_IPC_STREAM_MODULE
+  if (ngx_stream_lua_add_package_preload(cf, "ngx.ipc", ngx_lua_ipc_init_lua_code) != NGX_OK) {
+    return NGX_ERROR;
+  }
+#endif
+  
   return NGX_OK;
 }
 static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
@@ -423,7 +431,7 @@ ngx_module_t  ngx_lua_ipc_module = {
   NGX_MODULE_V1,
   &ngx_lua_ipc_ctx,              /* module context */
   ngx_lua_ipc_commands,          /* module directives */
-  NGX_HTTP_MODULE,               /* module type */
+  NGX_CORE_MODULE,               /* module type */
   NULL,                          /* init master */
   ngx_lua_ipc_init_module,       /* init module */
   ngx_lua_ipc_init_worker,       /* init process */
