@@ -76,7 +76,7 @@ end)
 
 # Example
 
-```nginx
+```lua
 
 http {
 
