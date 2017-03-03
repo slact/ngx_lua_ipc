@@ -82,15 +82,15 @@ http {
 
   init_worker_by_lua_block {
     local ipc = require "ngx.ipc"
-    ipc.receive("hello", function(data)
-      ngx.log(ngx.ALERT, "sender" .. ipc.sender .. " says " .. data)
+    ipc.receive('hello', function(data)
+      ngx.log(ngx.ALERT, 'sender' .. ipc.sender .. ' says ' .. data)
       
-      ipc.reply("reply", "hello to you too. you said " .. data)
+      ipc.reply('reply', 'hello to you too. you said ' .. data)
       
     end)
     
     ipc.receive("reply", function(data) 
-      ngx.log(ngx.ALERT, tostring(ipc.sender) .. " replied " .. data)
+      ngx.log(ngx.ALERT, tostring(ipc.sender) .. ' replied ' .. data)
     end) 
   }
   
