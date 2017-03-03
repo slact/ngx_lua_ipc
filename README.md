@@ -76,10 +76,9 @@ end)
 
 # Example
 
+`nginx.conf:`
 ```lua
-
 http {
-
   init_worker_by_lua_block {
     local ipc = require "ngx.ipc"
     ipc.receive('hello', function(data)
