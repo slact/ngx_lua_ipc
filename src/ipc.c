@@ -280,7 +280,9 @@ static void alloc_buf_copy(ipc_readbuf_t *rbuf, size_t size) {
   size_t  oldsz =rbuf->last - cur;
   assert(size > oldsz);
   alloc_buf(rbuf, size);
-  memcpy(rbuf->cur, cur, oldsz);
+  if(oldsz > 0) {
+    memcpy(rbuf->cur, cur, oldsz);
+  }
   rbuf->last = rbuf->cur + oldsz;  
   free(oldbuf);
 }
