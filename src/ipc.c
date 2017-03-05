@@ -362,7 +362,12 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
     if(!cur) {
       //need more data
       rbuf->read_next_bytes = rbuf->buf_last - rbuf->last;
-      assert(rbuf->read_next_bytes > 0);
+      assert(rbuf->buf_last - rbuf->last >= (ssize_t )rbuf->read_next_bytes);
+      if(rbuf->read_next_bytes == 0) { // no space to read data
+        alloc_buf_copy(rbuf, IPC_MAX_READBUF_LEN);
+        rbuf->read_next_bytes = rbuf->buf_last - rbuf->last;
+        assert(rbuf->read_next_bytes != 0);
+      }
       return NGX_OK;
     }
     else if(cur) {
