@@ -301,6 +301,11 @@ static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf) {
         free(rbuf->buf);
         alloc_buf(rbuf, IPC_MAX_READBUF_LEN);
       }
+      else if(rbuf->buf_last - rbuf->buf < IPC_MAX_READBUF_LEN) {
+        DBG("parsebuf_reset %p: remove small old buf & rewind", rbuf);
+        free(rbuf->buf);
+        alloc_buf(rbuf, IPC_MAX_READBUF_LEN);
+      }
       else {
         DBG("parsebuf_reset %p: rewind buf", rbuf);
         rbuf->cur = rbuf->buf;
