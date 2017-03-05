@@ -161,7 +161,7 @@ static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *ale
   if (n == -1) {
     err = ngx_errno;
     if (err == NGX_EAGAIN) {
-      ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() EAGAINED...");
+      //ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() EAGAINED...");
       return NGX_AGAIN;
     }
     
