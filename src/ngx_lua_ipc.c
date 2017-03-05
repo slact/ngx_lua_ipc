@@ -307,13 +307,17 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   }
   
   //listener timer now!!
-  if(hacked_listener_timer) {
-    DBG("run hacked timer now: %p", hacked_listener_timer);
+  if(hacked_listener_timer && hacked_listener_timer->timer.key > ngx_current_msec) {
+    DBG("run hacked timer next cycle: %p", hacked_listener_timer);
     ngx_del_timer(hacked_listener_timer);
     ngx_add_timer(hacked_listener_timer, 0);
   }
-  else {
+  else if(!hacked_listener_timer) {
+    DBG("timer handler running right now");
     assert(running_hacked_timer_handler == 1);
+  }
+  else {
+    DBG("hacked timer %p already set to run on next cycle", hacked_listener_timer);
   }
   return;
   
