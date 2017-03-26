@@ -161,7 +161,7 @@ static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *ale
   if (n == -1) {
     err = ngx_errno;
     if (err == NGX_EAGAIN) {
-      ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() EAGAINED...");
+      //ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() EAGAINED...");
       return NGX_AGAIN;
     }
     
@@ -280,7 +280,9 @@ static void alloc_buf_copy(ipc_readbuf_t *rbuf, size_t size) {
   size_t  oldsz =rbuf->last - cur;
   assert(size > oldsz);
   alloc_buf(rbuf, size);
-  memcpy(rbuf->cur, cur, oldsz);
+  if(oldsz > 0) {
+    memcpy(rbuf->cur, cur, oldsz);
+  }
   rbuf->last = rbuf->cur + oldsz;  
   free(oldbuf);
 }
@@ -296,6 +298,11 @@ static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf) {
     if(rbuf->last == rbuf->cur) {
       if(rbuf->buf_last - rbuf->buf > IPC_MAX_READBUF_LEN) {
         DBG("parsebuf_reset %p: remove large old buf & rewind", rbuf);
+        free(rbuf->buf);
+        alloc_buf(rbuf, IPC_MAX_READBUF_LEN);
+      }
+      else if(rbuf->buf_last - rbuf->buf < IPC_MAX_READBUF_LEN) {
+        DBG("parsebuf_reset %p: remove small old buf & rewind", rbuf);
         free(rbuf->buf);
         alloc_buf(rbuf, IPC_MAX_READBUF_LEN);
       }
@@ -355,7 +362,12 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
     if(!cur) {
       //need more data
       rbuf->read_next_bytes = rbuf->buf_last - rbuf->last;
-      assert(rbuf->read_next_bytes > 0);
+      assert(rbuf->buf_last - rbuf->last >= (ssize_t )rbuf->read_next_bytes);
+      if(rbuf->read_next_bytes == 0) { // no space to read data
+        alloc_buf_copy(rbuf, IPC_MAX_READBUF_LEN);
+        rbuf->read_next_bytes = rbuf->buf_last - rbuf->last;
+        assert(rbuf->read_next_bytes != 0);
+      }
       return NGX_OK;
     }
     else if(cur) {

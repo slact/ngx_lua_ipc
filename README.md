@@ -2,15 +2,29 @@ Interprocess communication for lua_nginx_module and openresty. Send named alerts
 
 Asynchronous, nonblocking, non-locking.
 
+### History 
+
 I wrote this as a quick hack to separate the [interprocess code](https://github.com/slact/nchan/tree/master/src/store/memory) out of [Nchan](https://github.com/slact/nchan) mostly on a flight back from Nginx Conf 2016. The completion of this module was generously sponsored by [ring.com](https://ring.com). Thanks guys!
 
-API:
+# API
+
 ```lua
 local ipc = require "ngx.ipc"
 ```
 
-## `ipc.receive`
+### `ipc.send`
+Send alert to a worker process.
+```lua
+ipc.send(destination_worker_pid, ipc_alert_name, data_string)
+```
 
+### `ipc.broadcast`
+Broadcast alert to all workers (including sender).
+```lua
+ipc.broadcast(alert_name, data_string)
+```
+
+### `ipc.receive`
 Register one or several alert handlers. 
 Note that `receive` cannot be used in the `init_by_lua*` context. During startup, use `init_worker_by_lua*`.
 
@@ -33,16 +47,15 @@ ipc.receive({
 })
 ```
 
-delete alert handler:
+Deleting an alert handler:
 ```lua
 ipc.receive(ipc_alert_name, nil)
 ```
 
-Alerts received without a handler are discarded.
+*Alerts received without a handler are discarded.*
 
-## `ipc.reply`
-
-reply to alert sender. works only when in an alert receiver handler function
+### `ipc.reply`
+Reply to worker that sent an alert. Works only when in an alert receiver handler function.
 
 ```lua
   ipc.receive("hello", function(data)
@@ -50,21 +63,8 @@ reply to alert sender. works only when in an alert receiver handler function
   end)
 ```
 
-## `ipc.send`
-
-send alert tp another worker
-```lua
-ipc.send(destination_worker_pid, ipc_alert_name, data_string)
-```
-
-## `ipc.broadcast`
-broadcast alert to all workers (including sender)
-```lua
-ipc.broadcast(alert_name, data_string)
-```
-
-## `ipc.sender`
-when receiving an alert, ipc.sender contains sender process id.
+### `ipc.sender`
+When receiving an alert, `ipc.sender` contains the sending worker"s process id.
 all other times, it is nil
 ```lua
 ipc.receive("hello", function(data)
@@ -76,10 +76,9 @@ end)
 
 # Example
 
-```nginx
-
+`nginx.conf`
+```lua
 http {
-
   init_worker_by_lua_block {
     local ipc = require "ngx.ipc"
     ipc.receive("hello", function(data)
