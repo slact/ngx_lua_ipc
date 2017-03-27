@@ -48,27 +48,7 @@ static struct {
   ipc_alert_waiting_t  *tail;
 } received_alerts = {NULL, NULL};
 
-typedef struct {
-  ngx_event_handler_pt   original_handler;
-  void                  *original_privdata;
-} hacktimer_data_t;
-
-static hacktimer_data_t hacktimer_data;
 static int running_hacked_timer_handler = 0;
-
-//wrapper for the hacked timer that 
-static void hacktimer_handler(ngx_event_t *ev) {
-  assert(ev->data == &hacktimer_data);
-  hacktimer = NULL; //it's about to be deleted (and a new one added), might as well clear it right now.
-  
-  ev->handler = hacktimer_data.original_handler;
-  ev->data = hacktimer_data.original_privdata;
-  
-  running_hacked_timer_handler=1;
-  //run original lua timer handler
-  ev->handler(ev);
-  running_hacked_timer_handler=0;
-}
 
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
 
@@ -147,6 +127,31 @@ static int ngx_lua_ipc_hacktimer_alert_iterator(lua_State *L) {
   return 4;
 }
 
+static int ngx_lua_ipc_hacktimer_run_handler(lua_State *L) {
+  luaL_checktype (L, 1, LUA_TFUNCTION); //handler
+  luaL_checktype (L, 2, LUA_TSTRING); //event name
+  luaL_checktype (L, 3, LUA_TSTRING); //event data
+  luaL_checktype (L, 4, LUA_TBOOLEAN); //should name be passed to handler as first argument?
+  
+  int pass_name = lua_toboolean(L, 4);
+  
+  hacktimer = NULL; //it's about to be deleted (and a new one added), might as well clear it right now.
+  running_hacked_timer_handler = 1;
+  if(!pass_name) {
+    lua_pushvalue(L, 1); //callback function
+    lua_pushvalue(L, 3); //event data
+    lua_call(L, 1, 0);
+  }
+  else {
+    lua_pushvalue(L, 1); //callback function
+    lua_pushvalue(L, 2); //event name
+    lua_pushvalue(L, 3); //event data
+    lua_call(L, 2, 0);
+  }
+  running_hacked_timer_handler = 0;
+  return 0;
+}
+
 ngx_event_t *ngx_lua_ipc_get_hacktimer(ngx_msec_t magic_key) {
   
   ngx_event_t    *ev;
@@ -197,6 +202,11 @@ static int ngx_lua_ipc_hacktimer_add_and_hack(lua_State *L) {
   ngx_msec_t      unique_timeout_key;
   ngx_event_t    *ev;
   
+  if(ngx_quit || ngx_exiting) {
+    //do nothing
+    return 0;
+  }
+  
   if(!ngx_event_timer_rbtree.sentinel) { //tree not ready yet
     luaL_error(L, "Can't register receive handlers in init_by_lua, too early in Nginx start. Try init_worker_by_lua.");
   }
@@ -222,12 +232,6 @@ static int ngx_lua_ipc_hacktimer_add_and_hack(lua_State *L) {
   //now find that crazy timer
   ev = ngx_lua_ipc_get_hacktimer(unique_timeout_key);
   assert(ev);
-  
-  hacktimer_data.original_handler=ev->handler;
-  hacktimer_data.original_privdata=ev->data;
-  
-  ev->data = &hacktimer_data;
-  ev->handler = hacktimer_handler;
   
   ngx_del_timer(ev);
   ngx_add_timer(ev, 10000000);
@@ -344,9 +348,10 @@ static int ngx_lua_ipc_init_lua_code(lua_State * L) {
   
   ngx_lua_ipc_loadscript(L, register_receive_handler);
   lua_pushvalue(L, t); //ipc table
+  lua_pushcfunction(L, ngx_lua_ipc_hacktimer_run_handler);
   lua_pushcfunction(L, ngx_lua_ipc_hacktimer_add_and_hack);
   lua_pushcfunction(L, ngx_lua_ipc_hacktimer_alert_iterator);
-  lua_call(L, 3, 1);
+  lua_call(L, 4, 1);
   
   lua_setfield(L, t, "receive");
   

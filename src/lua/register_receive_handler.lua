@@ -1,4 +1,4 @@
-return function(ipc, run_hacktimer, pending_alerts_iterator)
+return function(ipc, run_timer_handler, add_hacktimer, pending_alerts_iterator)
   local timer_handler
   timer_handler = function(premature)
     
@@ -8,16 +8,16 @@ return function(ipc, run_hacktimer, pending_alerts_iterator)
       
       local handler = ipc.handlers[name]
       if handler then
-        handler(data)
+        run_timer_handler(handler, name, data, false)
       elseif ipc.default_handler then
-        ipc.default_handler(name, data)
+        run_timer_handler(ipc.default_handler, name, data, true)
       end
     end
     
     ipc.sender = nil
     
     --add timer again and hack it
-    run_hacktimer(timer_handler)
+    add_hacktimer(timer_handler)
   end
 
   local hacktimer_started = false
@@ -47,7 +47,7 @@ return function(ipc, run_hacktimer, pending_alerts_iterator)
     end
     
     if not hacktimer_started then
-      run_hacktimer(timer_handler)
+      add_hacktimer(timer_handler)
       hacktimer_started = true
     end
     
