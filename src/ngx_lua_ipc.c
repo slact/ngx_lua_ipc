@@ -381,25 +381,32 @@ static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
 }
 
 static ngx_int_t ngx_lua_ipc_init_worker(ngx_cycle_t *cycle) {
-  int i, found = 0;
-  
+  int              i, found = 0;
+  worker_slot_t   *workerslot;
   if (ngx_process != NGX_PROCESS_WORKER && ngx_process != NGX_PROCESS_SINGLE) {
     //not a worker, stop initializing stuff.
     return NGX_OK;
   }
   
   shmtx_lock(shm);
-  for(i=0; i<max_workers; i++) {
-    if(shdata->worker_slots[i].pid == 0) {
-      shdata->worker_slots[i].pid = ngx_pid;
-      shdata->worker_slots[i].slot = ngx_process_slot; 
+  for(i=0; !found && i<max_workers; i++) {
+    workerslot = &shdata->worker_slots[i];
+    if( workerslot->pid == 0) {
+      // empty workerslot
       found = 1;
-      break;
+    }
+    else if(workerslot->slot == ngx_process_slot) {
+      // replacing previously crashed(?) worker
+      found = 1;
     }
   }
   shmtx_unlock(shm);
   
-  if(!found) {
+  if(found) {
+    workerslot->pid = ngx_pid;
+    workerslot->slot = ngx_process_slot; 
+  }
+  else {
     return NGX_ERROR;
   }
   ipc_register_worker(ipc, cycle);
