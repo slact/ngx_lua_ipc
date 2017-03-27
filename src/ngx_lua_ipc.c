@@ -240,14 +240,15 @@ static int ngx_lua_ipc_send_alert(lua_State *L) {
   ngx_lua_ipc_get_alert_args(L, 1, &name, &data);
   
   int            i;
-  
+  lua_pushboolean(L, 0);
   for(i=0; i<max_workers; i++) {
     if(shdata->worker_slots[i].pid == target_worker) {
       ipc_alert(ipc, shdata->worker_slots[i].slot, &name, &data);
+      lua_pushboolean(L, 1);
       break;
     }
   }
-  return 0;
+  return 1;
 }
 
 static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
@@ -260,7 +261,8 @@ static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
     ipc_alert(ipc, shdata->worker_slots[i].slot, &name, &data);
   }
   
-  return 0;
+  lua_pushboolean(L, 1);
+  return 1;
 }
 
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {

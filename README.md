@@ -17,12 +17,14 @@ Send alert to a worker process.
 ```lua
 ipc.send(destination_worker_pid, ipc_alert_name, data_string)
 ```
+Returns `true` if `destination_worker_pid` is a valid worker process id, `false` otherwise.
 
 ### `ipc.broadcast`
 Broadcast alert to all workers (including sender).
 ```lua
 ipc.broadcast(alert_name, data_string)
 ```
+Always returns `true`.
 
 ### `ipc.receive`
 Register one or several alert handlers. 
@@ -34,6 +36,7 @@ ipc.receive(ipc_alert_name, function(data)
   --ipc receiver function for all alerts with string name ipc_alert_name
 end)
 ```
+Always returns `true`.
 
 Several alert names can be registered at once by passing a table:
 ```lua
@@ -62,6 +65,7 @@ Reply to worker that sent an alert. Works only when in an alert receiver handler
     ipc.reply("hello-response", "hi, you said "..data)
   end)
 ```
+Always returns `true`.
 
 ### `ipc.sender`
 When receiving an alert, `ipc.sender` contains the sending worker"s process id.
