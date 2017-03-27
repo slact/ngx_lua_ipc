@@ -77,7 +77,6 @@ static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
   if(data) { //zone being passed after restart
     zone->data = data;
     d = zone->data;
-    shm_reinit(shm);
   }
   else {
     shm_init(shm);
@@ -87,15 +86,17 @@ static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
     }
     
     zone->data = d;
-    shdata = d;
-    
   }
+  shdata = d;
   
+  shmtx_lock(shm);
   if(shdata->worker_slots) {
-    shm_free(shm, shdata->worker_slots);
+    shm_locked_free(shm, shdata->worker_slots);
+    shdata->worker_slots = NULL;
   }
-  shdata->worker_slots = shm_calloc(shm, sizeof(worker_slot_t) * max_workers, "worker slots");
-    
+  shdata->worker_slots = shm_locked_calloc(shm, sizeof(worker_slot_t) * max_workers, "worker slots");
+  
+  shmtx_unlock(shm);
   return NGX_OK;
 }
 
