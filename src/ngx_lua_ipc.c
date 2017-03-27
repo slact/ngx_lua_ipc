@@ -69,14 +69,6 @@ static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
   }
   shdata = d;
   
-  shmtx_lock(shm);
-  if(shdata->worker_slots) {
-    shm_locked_free(shm, shdata->worker_slots);
-    shdata->worker_slots = NULL;
-  }
-  shdata->worker_slots = shm_locked_calloc(shm, sizeof(worker_slot_t) * max_workers, "worker slots");
-  
-  shmtx_unlock(shm);
   return NGX_OK;
 }
 
@@ -375,6 +367,14 @@ static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
   ngx_core_conf_t                *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
   
   max_workers = ccf->worker_processes;
+  shmtx_lock(shm);
+  if(shdata->worker_slots) {
+    shm_locked_free(shm, shdata->worker_slots);
+    shdata->worker_slots = NULL;
+  }
+  shdata->worker_slots = shm_locked_calloc(shm, sizeof(worker_slot_t) * max_workers, "worker slots");
+  
+  shmtx_unlock(shm);
   
   //initialize our little IPC
   if(ipc == NULL) {
