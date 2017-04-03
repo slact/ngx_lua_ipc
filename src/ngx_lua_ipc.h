@@ -2,7 +2,6 @@
 #define NGX_LUA_IPC_H
 
 #include <ngx_http.h>
-#include <ngx_lua_ipc_util.h>
 #include <nginx.h>
 
 extern ngx_module_t ngx_lua_ipc_module;
