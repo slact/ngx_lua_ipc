@@ -54,7 +54,7 @@ struct ipc_s {
   ipc_alert_handler_pt   handler;
 }; //ipc_t
 
-
+//IPC needs to be initialized in three steps (pre, during, or post)-config, init_module, and init_worker
 ngx_int_t ipc_init_config(ipc_t *ipc, ngx_conf_t *cf, ngx_module_t *ipc_owner_module, char *ipc_name);
 ngx_int_t ipc_init_module(ipc_t *ipc, ngx_cycle_t *cycle);
 ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle);
