@@ -35,10 +35,13 @@ typedef struct {
 
 typedef struct ipc_s ipc_t;
 
+typedef enum {IPC_PIPE, IPC_SOCKETPAIR} ipc_socket_type_t;
 typedef struct {
   ipc_t                 *ipc; //need this backrerefence for write events
+  ipc_socket_type_t      socket_type;
   ngx_socket_t           pipe[2];
-  ngx_connection_t      *c;
+  ngx_connection_t      *read_conn;
+  ngx_connection_t      *write_conn;
   ipc_writebuf_t         wbuf;
   ipc_readbuf_t          rbuf;
   unsigned               active:1;
@@ -52,6 +55,7 @@ struct ipc_s {
   ipc_channel_t          worker_channel[NGX_MAX_PROCESSES];
   ngx_int_t              worker_process_count;
   ipc_alert_handler_pt   worker_alert_handler;
+  
 }; //ipc_t
 
 //IPC needs to be initialized in three steps (pre, during, or post)-config, init_module, and init_worker
@@ -70,4 +74,5 @@ ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid);
 ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data);
 ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t pid, ngx_str_t *name, ngx_str_t *data);
 ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data); //poor man's broadcast
+
 
