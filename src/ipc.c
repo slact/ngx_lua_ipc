@@ -219,7 +219,7 @@ ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid) {
   return NGX_ERROR;
 }
 
-ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_str_t *, ngx_str_t *)) {
+ngx_int_t ipc_set_worker_alert_handler(ipc_t *ipc, ipc_alert_handler_pt alert_handler) {
   ipc->handler=alert_handler;
   return NGX_OK;
 }

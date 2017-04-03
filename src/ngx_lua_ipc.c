@@ -321,7 +321,7 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
 static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
   
   ipc_init_module(&ipc, cycle);
-  ipc_set_handler(&ipc, ngx_lua_ipc_alert_handler);
+  ipc_set_worker_alert_handler(&ipc, ngx_lua_ipc_alert_handler);
   
   return NGX_OK;
 }

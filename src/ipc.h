@@ -44,6 +44,7 @@ typedef struct {
   unsigned               active:1;
 } ipc_comm_t;
 
+typedef void (*ipc_alert_handler_pt)(ngx_int_t alert_sender_slot, ngx_str_t *alert_name, ngx_str_t *alert_data);
 
 struct ipc_s {
   const char            *name;
@@ -58,13 +59,13 @@ ngx_int_t ipc_init_config(ipc_t *ipc, ngx_conf_t *cf, ngx_module_t *ipc_owner_mo
 ngx_int_t ipc_init_module(ipc_t *ipc, ngx_cycle_t *cycle);
 ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle);
 
+ngx_int_t ipc_set_worker_alert_handler(ipc_t *ipc, ipc_alert_handler_pt handler);
+
 ngx_int_t ipc_exit_worker(ipc_t *ipc, ngx_cycle_t *cycle);
 ngx_int_t ipc_exit_master(ipc_t *ipc, ngx_cycle_t *cycle);
 
 ngx_pid_t ipc_get_pid(ipc_t *ipc, int process_slot);
 ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid);
-
-ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_str_t *, ngx_str_t *));
 
 ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data);
 ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t pid, ngx_str_t *name, ngx_str_t *data);
