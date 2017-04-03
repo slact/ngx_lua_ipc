@@ -6,6 +6,13 @@
 #include <assert.h>
 #include "ipc.h"
 
+#define IPC_UINT16_MAXLEN (sizeof("65536")-1)
+#define IPC_UINT32_MAXLEN (sizeof("4294967295")-1)
+#define IPC_MAX_HEADER_LEN (IPC_UINT16_MAXLEN   + 1 + IPC_UINT32_MAXLEN + 1 + IPC_UINT16_MAXLEN + 1)
+#define IPC_MAX_READBUF_LEN 512
+// <SRC_SLOT(uint16)>|<NAME&DATA_LEN(uint32)>|<NAME_LEN(uint16)>|<NAME><DATA>
+
+
 #define DEBUG_LEVEL NGX_LOG_DEBUG
 //#define DEBUG_LEVEL NGX_LOG_WARN
 
@@ -65,17 +72,17 @@ static ngx_shm_zone_t *ipc_shm_create(char *name, ngx_module_t *module, ngx_conf
   shm_zone->data = (void *) 1;
   return shm_zone;
 }
-
-
-
-
-
+//end shared memory stuff
 
 
 
 static void ipc_read_handler(ngx_event_t *ev);
 static ngx_int_t ipc_free_buffered_alert(ipc_alert_link_t *alert_link);
 static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf);
+
+static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker));
+static ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle);
+static ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle);
 
 
 
@@ -212,27 +219,6 @@ ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid) {
   return NGX_ERROR;
 }
 
-
-ngx_int_t ipc_init(ipc_t *ipc) {
-  int                             i = 0;
-  ipc_comm_t                     *proc;
-  
-  for(i=0; i< NGX_MAX_PROCESSES; i++) {
-    proc = &ipc->process[i];
-    proc->ipc = ipc;
-    proc->pipe[0]=NGX_INVALID_FILE;
-    proc->pipe[1]=NGX_INVALID_FILE;
-    //proc->broadcast[1]=NGX_INVALID_FILE;
-    proc->c=NULL;
-    proc->active = 0;
-    proc->wbuf.head = NULL;
-    proc->wbuf.tail = NULL;
-    proc->wbuf.n = 0;
-    parsebuf_reset_readbuf(&proc->rbuf);
-  }
-  return NGX_OK;
-}
-
 ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_str_t *, ngx_str_t *)) {
   ipc->handler=alert_handler;
   return NGX_OK;
@@ -245,7 +231,7 @@ static void ipc_try_close_fd(ngx_socket_t *fd) {
   }
 }
 
-ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker)) {
+static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker)) {
 //initialize pipes for workers in advance.
   int                             i, j, s = 0;
   ngx_int_t                       last_expected_process = ngx_last_process;
@@ -425,7 +411,7 @@ static void ipc_write_handler(ngx_event_t *ev) {
   }
 }
 
-ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
+static ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   int                    i;    
   ngx_connection_t      *c;
   ipc_comm_t            *proc;

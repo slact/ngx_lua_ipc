@@ -1,9 +1,3 @@
-#define IPC_UINT16_MAXLEN (sizeof("65536")-1)
-#define IPC_UINT32_MAXLEN (sizeof("4294967295")-1)
-#define IPC_MAX_HEADER_LEN (IPC_UINT16_MAXLEN   + 1 + IPC_UINT32_MAXLEN + 1 + IPC_UINT16_MAXLEN + 1)
-#define IPC_MAX_READBUF_LEN 512
-// <SRC_SLOT(uint16)>|<NAME&DATA_LEN(uint32)>|<NAME_LEN(uint16)>|<NAME><DATA>
-
 typedef struct ipc_alert_link_s ipc_alert_link_t;
 struct ipc_alert_link_s {
   ipc_alert_link_t *next;
@@ -82,11 +76,7 @@ ngx_int_t ipc_exit_master(ipc_t *ipc, ngx_cycle_t *cycle);
 ngx_pid_t ipc_get_pid(ipc_t *ipc, int process_slot);
 ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid);
 
-ngx_int_t ipc_init(ipc_t *ipc);
-ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker));
 ngx_int_t ipc_set_handler(ipc_t *ipc, void (*alert_handler)(ngx_int_t, ngx_str_t *, ngx_str_t *));
-ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle);
-ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle);
 
 ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data);
 ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t pid, ngx_str_t *name, ngx_str_t *data);
