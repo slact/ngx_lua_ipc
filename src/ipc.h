@@ -51,7 +51,7 @@ struct ipc_s {
   ngx_shm_zone_t        *shm_zone;
   ipc_channel_t          process[NGX_MAX_PROCESSES];
   ngx_int_t              configured_worker_process_count;
-  void                  (*handler)(ngx_int_t, ngx_str_t *, ngx_str_t *);
+  ipc_alert_handler_pt   handler;
 }; //ipc_t
 
 
