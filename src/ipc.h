@@ -42,14 +42,14 @@ typedef struct {
   ipc_writebuf_t         wbuf;
   ipc_readbuf_t          rbuf;
   unsigned               active:1;
-} ipc_comm_t;
+} ipc_channel_t;
 
 typedef void (*ipc_alert_handler_pt)(ngx_int_t alert_sender_slot, ngx_str_t *alert_name, ngx_str_t *alert_data);
 
 struct ipc_s {
   const char            *name;
   ngx_shm_zone_t        *shm_zone;
-  ipc_comm_t             process[NGX_MAX_PROCESSES];
+  ipc_channel_t          process[NGX_MAX_PROCESSES];
   ngx_int_t              configured_worker_process_count;
   void                  (*handler)(ngx_int_t, ngx_str_t *, ngx_str_t *);
 }; //ipc_t
