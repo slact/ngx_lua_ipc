@@ -31,11 +31,8 @@
   #define ngx_lua_ipc_loadscript(lua_state, name)                 \
           luaL_dostring(lua_state, ngx_ipc_lua_scripts.name)
 #endif
-static shmem_t         *shm = NULL;
-static shm_data_t      *shdata = NULL;
 
-static ipc_t            ipc_data;
-static ipc_t           *ipc = NULL;
+static ipc_t            ipc;
 
 // lua for the ipc alert handlers will be run from this timer's context
 static ngx_event_t     *hacktimer = NULL;
@@ -52,25 +49,6 @@ static int running_hacked_timer_handler = 0;
 
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
 
-static ngx_int_t initialize_shm(ngx_shm_zone_t *zone, void *data) {
-  shm_data_t         *d;
-  if(data) { //zone being passed after restart
-    zone->data = data;
-    d = zone->data;
-  }
-  else {
-    shm_init(shm);
-    
-    if((d = shm_calloc(shm, sizeof(*d), "root shared data")) == NULL) {
-      return NGX_ERROR;
-    }
-    
-    zone->data = d;
-  }
-  shdata = d;
-  
-  return NGX_OK;
-}
 
 ngx_int_t luaL_checklstring_as_ngx_str(lua_State *L, int n, ngx_str_t *str) {
   size_t         data_sz;
@@ -234,42 +212,31 @@ static int ngx_lua_ipc_hacktimer_add_and_hack(lua_State *L) {
 }
 
 static int ngx_lua_ipc_send_alert(lua_State *L) {
-  int            target_worker = luaL_checknumber(L, 1);
-  
+  int            target_worker_pid = luaL_checknumber(L, 1);
+  ngx_int_t      rc;
   ngx_str_t      name, data;
   ngx_lua_ipc_get_alert_args(L, 1, &name, &data);
   
-  int            i;
-  lua_pushboolean(L, 0);
-  for(i=0; i<max_workers; i++) {
-    if(shdata->worker_slots[i].pid == target_worker) {
-      ipc_alert(ipc, shdata->worker_slots[i].slot, &name, &data);
-      lua_pushboolean(L, 1);
-      break;
-    }
-  }
+  rc = ipc_alert_pid(&ipc, target_worker_pid, &name, &data);
+  
+  lua_pushboolean(L, rc == NGX_OK);
   return 1;
 }
 
 static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
   ngx_str_t      name, data;
-  
+  ngx_int_t      rc;
   ngx_lua_ipc_get_alert_args(L, 0, &name, &data);
-  int            i;
+
+  rc = ipc_alert_all_workers(&ipc, &name, &data);
   
-  for(i=0; i<max_workers; i++) {
-    ipc_alert(ipc, shdata->worker_slots[i].slot, &name, &data);
-  }
-  
-  lua_pushboolean(L, 1);
+  lua_pushboolean(L, rc == NGX_OK);
   return 1;
 }
 
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
   
   ipc_alert_waiting_t *alert;
-  int                  i;
-  ngx_pid_t            sender_pid = NGX_INVALID_PID;
   
   if(!hacktimer && !running_hacked_timer_handler) {
     //no alert handlers here
@@ -279,16 +246,8 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   alert = ngx_alloc(sizeof(*alert) + name->len + data->len, ngx_cycle->log);
   assert(alert);
   
-  //find sender process id
-  for(i=0; i<max_workers; i++) {
-    if(shdata->worker_slots[i].slot == sender_slot) {
-      sender_pid = shdata->worker_slots[i].pid;
-      break;
-    }
-  }
-
   alert->sender_slot = sender_slot;
-  alert->sender_pid = sender_pid;
+  alert->sender_pid = ipc_get_pid(&ipc, sender_slot);
   
   alert->name.data = (u_char *)&alert[1];
   alert->name.len = name->len;
@@ -355,9 +314,8 @@ static int ngx_lua_ipc_init_lua_code(lua_State * L) {
 }
 
 static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
-  ngx_str_t              name = ngx_string("ngx_lua_ipc");
 
-  shm = shm_create(&name, &ngx_lua_ipc_module, cf, 1024*1024, initialize_shm, &ngx_lua_ipc_module);
+  ipc_init_config(&ipc, cf, &ngx_lua_ipc_module, "ngx_lua_ipc");
   
   if (ngx_http_lua_add_package_preload(cf, "ngx.ipc", ngx_lua_ipc_init_lua_code) != NGX_OK) {
     return NGX_ERROR;
@@ -366,70 +324,23 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
   return NGX_OK;
 }
 static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
-  ngx_core_conf_t                *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
   
-  max_workers = ccf->worker_processes;
-  shmtx_lock(shm);
-  if(shdata->worker_slots) {
-    shm_locked_free(shm, shdata->worker_slots);
-    shdata->worker_slots = NULL;
-  }
-  shdata->worker_slots = shm_locked_calloc(shm, sizeof(worker_slot_t) * max_workers, "worker slots");
+  ipc_init_module(&ipc, cycle);
+  ipc_set_handler(&ipc, ngx_lua_ipc_alert_handler);
   
-  shmtx_unlock(shm);
-  
-  //initialize our little IPC
-  if(ipc == NULL) {
-    ipc = &ipc_data;
-    ipc_init(ipc);
-    ipc_set_handler(ipc, ngx_lua_ipc_alert_handler);
-  }
-  ipc_open(ipc, cycle, ccf->worker_processes, NULL);
   return NGX_OK;
 }
 
 static ngx_int_t ngx_lua_ipc_init_worker(ngx_cycle_t *cycle) {
-  int              i, found = 0;
-  worker_slot_t   *workerslot;
-  if (ngx_process != NGX_PROCESS_WORKER && ngx_process != NGX_PROCESS_SINGLE) {
-    //not a worker, stop initializing stuff.
-    return NGX_OK;
-  }
-  
-  shmtx_lock(shm);
-  for(i=0; !found && i<max_workers; i++) {
-    workerslot = &shdata->worker_slots[i];
-    if( workerslot->pid == 0) {
-      // empty workerslot
-      found = 1;
-    }
-    else if(workerslot->slot == ngx_process_slot) {
-      // replacing previously crashed(?) worker
-      found = 1;
-    }
-  }
-  shmtx_unlock(shm);
-  
-  if(found) {
-    workerslot->pid = ngx_pid;
-    workerslot->slot = ngx_process_slot; 
-  }
-  else {
-    return NGX_ERROR;
-  }
-  ipc_register_worker(ipc, cycle);
-  
-  return NGX_OK;
+  return ipc_init_worker(&ipc, cycle);
 }
 
 static void ngx_lua_ipc_exit_worker(ngx_cycle_t *cycle) { 
-  ipc_close(ipc, cycle);
+  ipc_exit_worker(&ipc, cycle);
 }
 
 static void ngx_lua_ipc_exit_master(ngx_cycle_t *cycle) {
-  ipc_close(ipc, cycle);
-  shm_free(shm, shdata);
-  shm_destroy(shm);
+  ipc_exit_master(&ipc, cycle);
 }
 
 static ngx_command_t  ngx_lua_ipc_commands[] = {

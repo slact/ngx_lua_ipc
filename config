@@ -4,7 +4,6 @@ ngx_addon_name=ngx_lua_ipc_module
 
 _NGX_LUA_IPC_SRCS="\
   ${ngx_addon_dir}/src/ipc.c \
-  ${ngx_addon_dir}/src/shmem.c \
   ${ngx_addon_dir}/src/ngx_lua_ipc_util.c \
   ${ngx_addon_dir}/src/ngx_lua_ipc.c \
 "

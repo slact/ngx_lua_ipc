@@ -1,5 +1,7 @@
 //worker processes of the world, unite.
-#include <ngx_lua_ipc.h>
+#include <ngx_http.h>
+
+#include <nginx.h>
 #include <ngx_channel.h>
 #include <assert.h>
 #include "ipc.h"
@@ -11,19 +13,216 @@
 #define ERR(fmt, args...) ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "IPC:" fmt, ##args)
 
 
+//shared memory stuff
+typedef struct {
+  ngx_int_t      pid;
+  ngx_int_t      slot;
+} worker_slot_tracking_t;
+
+typedef struct {
+  worker_slot_tracking_t   *worker_slots;
+} ipc_shm_data_t;
+
+static ngx_int_t shm_init_callback(ngx_shm_zone_t *zone, void *data) {
+  ipc_shm_data_t         *d;
+  if(data) { //zone being passed after restart
+    zone->data = data;
+    d = zone->data;
+  }
+  else {
+    ngx_slab_pool_t    *shpool = (ngx_slab_pool_t *)zone->shm.addr;
+    ngx_slab_init(shpool);
+    
+    
+    if((d = ngx_slab_alloc(shpool, sizeof(*d))) != NULL) {
+      ngx_memzero(d, sizeof(*d));
+    }
+    else {
+      return NGX_ERROR;
+    }
+    
+    zone->data = d;
+  }
+  return NGX_OK;
+}
+
+static ngx_shm_zone_t *ipc_shm_create(char *name, ngx_module_t *module, ngx_conf_t *cf, size_t shm_size, ngx_int_t (*init)(ngx_shm_zone_t *, void *)) {
+  u_char                          zone_name_buf[1024];
+  ngx_snprintf(zone_name_buf, 1024, "ngx_ipc: %s", name);
+  ngx_str_t                       zone_name = ngx_string(zone_name_buf);
+
+  ngx_shm_zone_t    *shm_zone;
+
+  shm_size = ngx_align(shm_size, ngx_pagesize);
+  if (shm_size < ngx_pagesize) {
+    shm_size = ngx_pagesize;
+  }
+  shm_zone = ngx_shared_memory_add(cf, &zone_name, shm_size, module);
+  if (shm_zone == NULL) {
+    return NULL;
+  }
+  shm_zone->init = shm_init_callback;
+  shm_zone->data = (void *) 1;
+  return shm_zone;
+}
+
+
+
+
+
+
+
+
 static void ipc_read_handler(ngx_event_t *ev);
 static ngx_int_t ipc_free_buffered_alert(ipc_alert_link_t *alert_link);
 static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf);
 
-ngx_int_t ipc_init(ipc_t *ipc) {
+
+
+ngx_int_t ipc_init_config(ipc_t *ipc, ngx_conf_t *cf, ngx_module_t *module, char *name) {
   int                             i = 0;
-  ipc_process_t                  *proc;
+  ipc_comm_t                     *proc;
+
   
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
     proc = &ipc->process[i];
     proc->ipc = ipc;
     proc->pipe[0]=NGX_INVALID_FILE;
     proc->pipe[1]=NGX_INVALID_FILE;
+    //proc->broadcast[1]=NGX_INVALID_FILE;
+    proc->c=NULL;
+    proc->active = 0;
+    proc->wbuf.head = NULL;
+    proc->wbuf.tail = NULL;
+    proc->wbuf.n = 0;
+    parsebuf_reset_readbuf(&proc->rbuf);
+  }
+  
+  ipc->shm_zone = ipc_shm_create(name, module, cf, NGX_MAX_PROCESSES * sizeof(worker_slot_tracking_t) * 2, shm_init_callback);
+  if(!ipc->shm_zone) { 
+    return NGX_ERROR;
+  }
+  
+  return NGX_OK;
+}
+
+ngx_int_t ipc_init_module(ipc_t *ipc, ngx_cycle_t *cycle) {
+  ngx_core_conf_t                *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+  ngx_int_t                       max_workers = ccf->worker_processes;
+  ngx_slab_pool_t                *shpool = (ngx_slab_pool_t *)ipc->shm_zone->shm.addr;
+  ipc_shm_data_t                 *shdata = ipc->shm_zone->data;
+  size_t                          workerslots_sz = sizeof(*shdata->worker_slots) * max_workers;
+  
+  ipc->configured_worker_process_count = max_workers;
+  
+  ngx_shmtx_lock(&shpool->mutex);
+  if(shdata->worker_slots) {
+    ngx_slab_free_locked(shpool, shdata->worker_slots);
+    shdata->worker_slots = NULL;
+  }
+  
+  if((shdata->worker_slots = ngx_slab_alloc_locked(shpool, workerslots_sz)) != NULL) {
+    ngx_memzero(shdata->worker_slots, workerslots_sz);
+  }
+  
+  ngx_shmtx_unlock(&shpool->mutex);
+  
+  ipc_open(ipc, cycle, max_workers, NULL);
+  return NGX_OK;
+}
+
+ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
+  ngx_slab_pool_t                *shpool = (ngx_slab_pool_t *)ipc->shm_zone->shm.addr;
+  ipc_shm_data_t                 *shdata = ipc->shm_zone->data;
+  ngx_int_t                       max_workers = ipc->configured_worker_process_count;
+  int                             i, found = 0;
+  worker_slot_tracking_t         *workerslot;
+  
+  if (ngx_process != NGX_PROCESS_WORKER && ngx_process != NGX_PROCESS_SINGLE) {
+    //not a worker, stop initializing stuff.
+    return NGX_OK;
+  }
+  
+  ngx_shmtx_lock(&shpool->mutex);
+  
+  for(i=0; !found && i<max_workers; i++) {
+    workerslot = &shdata->worker_slots[i];
+    if( workerslot->pid == 0) {
+      // empty workerslot
+      found = 1;
+    }
+    else if(workerslot->slot == ngx_process_slot) {
+      // replacing previously crashed(?) worker
+      found = 1;
+    }
+  }
+  
+  ngx_shmtx_unlock(&shpool->mutex);
+  
+  if(found) {
+    workerslot->pid = ngx_pid;
+    workerslot->slot = ngx_process_slot; 
+  }
+  else {
+    return NGX_ERROR;
+  }
+  ipc_register_worker(ipc, cycle);
+  
+  return NGX_OK;  
+}
+
+
+ngx_int_t ipc_exit_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
+  return ipc_close(ipc, cycle);
+}
+ngx_int_t ipc_exit_master(ipc_t *ipc, ngx_cycle_t *cycle) {
+  ngx_int_t            rc;
+  ngx_slab_pool_t     *shpool = (ngx_slab_pool_t *)ipc->shm_zone->shm.addr;
+  ipc_shm_data_t      *shdata = ipc->shm_zone->data;
+  
+  rc = ipc_close(ipc, cycle);
+  ngx_slab_free(shpool, shdata);
+  return rc;
+}
+
+ngx_pid_t ipc_get_pid(ipc_t *ipc, int process_slot) {
+  ipc_shm_data_t         *shdata = ipc->shm_zone->data;
+  int                     max_workers = ipc->configured_worker_process_count;
+  int                     i;
+  worker_slot_tracking_t *worker_slots = shdata->worker_slots;
+  
+  for(i=0; i<max_workers; i++) {
+    if(worker_slots[i].slot == process_slot) {
+      return worker_slots[i].pid;
+    }
+  }
+  return NGX_INVALID_PID;
+}
+ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid) {
+  ipc_shm_data_t         *shdata = ipc->shm_zone->data;
+  int                     max_workers = ipc->configured_worker_process_count;
+  int                     i;
+  worker_slot_tracking_t *worker_slots = shdata->worker_slots;
+  
+  for(i=0; i<max_workers; i++) {
+    if(worker_slots[i].pid == pid) {
+      return worker_slots[i].slot;
+    }
+  }
+  return NGX_ERROR;
+}
+
+
+ngx_int_t ipc_init(ipc_t *ipc) {
+  int                             i = 0;
+  ipc_comm_t                     *proc;
+  
+  for(i=0; i< NGX_MAX_PROCESSES; i++) {
+    proc = &ipc->process[i];
+    proc->ipc = ipc;
+    proc->pipe[0]=NGX_INVALID_FILE;
+    proc->pipe[1]=NGX_INVALID_FILE;
+    //proc->broadcast[1]=NGX_INVALID_FILE;
     proc->c=NULL;
     proc->active = 0;
     proc->wbuf.head = NULL;
@@ -50,7 +249,7 @@ ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slo
 //initialize pipes for workers in advance.
   int                             i, j, s = 0;
   ngx_int_t                       last_expected_process = ngx_last_process;
-  ipc_process_t                  *proc;
+  ipc_comm_t                     *proc;
   ngx_socket_t                   *socks;
   
   /* here's the deal: we have no control over fork()ing, nginx's internal 
@@ -118,7 +317,7 @@ ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slo
 
 ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
   int i;
-  ipc_process_t            *proc;
+  ipc_comm_t               *proc;
   ipc_alert_link_t         *cur, *cur_next;
   
   for (i=0; i<NGX_MAX_PROCESSES; i++) {
@@ -187,7 +386,7 @@ static void ipc_write_handler(ngx_event_t *ev) {
   ngx_connection_t        *c = ev->data;
   ngx_socket_t             fd = c->fd;
   
-  ipc_process_t           *proc = (ipc_process_t *) c->data;
+  ipc_comm_t              *proc = (ipc_comm_t *) c->data;
   ipc_alert_link_t        *cur;
   
   ngx_int_t                rc;
@@ -229,7 +428,7 @@ static void ipc_write_handler(ngx_event_t *ev) {
 ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   int                    i;    
   ngx_connection_t      *c;
-  ipc_process_t         *proc;
+  ipc_comm_t            *proc;
   
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
     
@@ -414,7 +613,7 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
   return NGX_OK;
 }
 
-static ngx_int_t ipc_read(ipc_process_t *ipc_proc, ipc_readbuf_t *rbuf, ngx_log_t *log) {
+static ngx_int_t ipc_read(ipc_comm_t *ipc_proc, ipc_readbuf_t *rbuf, ngx_log_t *log) {
   ssize_t             n;
   ngx_err_t           err;
   ngx_int_t           rc;
@@ -456,7 +655,7 @@ static void ipc_read_handler(ngx_event_t *ev) {
   //copypasta from os/unix/ngx_process_cycle.c (ngx_channel_handler)
   ngx_int_t          rc;
   ngx_connection_t  *c;
-  ipc_process_t     *ipc_proc;
+  ipc_comm_t        *ipc_proc;
   
   if (ev->timedout) {
     ev->timedout = 0;
@@ -481,10 +680,10 @@ static void ipc_read_handler(ngx_event_t *ev) {
 // <SRC_SLOT(uint16)>|<NAME&DATA_LEN(uint32)>|<NAME_LEN(uint16)>|<NAME><DATA>
 
 
-ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data) {
+ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data) {
   
   ipc_alert_link_t   *alert;
-  ipc_process_t      *proc = &ipc->process[slot];
+  ipc_comm_t         *proc = &ipc->process[slot];
   ipc_writebuf_t     *wb = &proc->wbuf;
   size_t              alert_str_size = 0;
   u_char             *end;
@@ -534,6 +733,27 @@ ngx_int_t ipc_alert(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data
   //ngx_handle_write_event(ipc->c[slot]->write, 0);
   //ngx_add_event(ipc->c[slot]->write, NGX_WRITE_EVENT, NGX_CLEAR_EVENT);
 
+  return NGX_OK;
+}
+
+
+ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t worker_pid, ngx_str_t *name, ngx_str_t *data) {
+  ngx_int_t slot = ipc_get_slot(ipc, worker_pid);
+  if(slot == NGX_ERROR) {
+    return NGX_ERROR;
+  }
+  return ipc_alert_slot(ipc, slot, name, data);
+}
+
+ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data) {
+  ipc_shm_data_t         *shdata = ipc->shm_zone->data;
+  int                     max_workers = ipc->configured_worker_process_count;
+  int                     i;
+  worker_slot_tracking_t *worker_slots = shdata->worker_slots;
+  
+  for(i=0; i<max_workers; i++) {
+    ipc_alert_slot(ipc, worker_slots[i].slot, name, data);
+  }
   return NGX_OK;
 }
 
