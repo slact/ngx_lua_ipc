@@ -32,20 +32,15 @@
           luaL_dostring(lua_state, ngx_ipc_lua_scripts.name)
 #endif
 
-static ipc_t            ipc;
+static ipc_t                         ipc;
 
 // lua for the ipc alert handlers will be run from this timer's context
-static ngx_event_t     *hacktimer = NULL;
-
-static ngx_int_t        max_workers;
+static ngx_event_t                  *hacktimer = NULL;
+static int                           running_hacked_timer_handler = 0;
 
 //received but yet-unprocessed alerts are quered here
-static struct {
-  ipc_alert_waiting_t  *head;
-  ipc_alert_waiting_t  *tail;
-} received_alerts = {NULL, NULL};
+static received_buffered_alerts_t   received_alerts = {NULL, NULL};
 
-static int running_hacked_timer_handler = 0;
 
 static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
 
