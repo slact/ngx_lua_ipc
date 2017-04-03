@@ -109,6 +109,8 @@ ngx_int_t ipc_init_config(ipc_t *ipc, ngx_conf_t *cf, ngx_module_t *module, char
     return NGX_ERROR;
   }
   
+  ipc->worker_process_count = NGX_ERROR;
+  
   return NGX_OK;
 }
 
@@ -119,7 +121,7 @@ ngx_int_t ipc_init_module(ipc_t *ipc, ngx_cycle_t *cycle) {
   ipc_shm_data_t                 *shdata = ipc->shm_zone->data;
   size_t                          workerslots_sz = sizeof(*shdata->worker_slots) * max_workers;
   
-  ipc->configured_worker_process_count = max_workers;
+  ipc->worker_process_count = max_workers;
   
   ngx_shmtx_lock(&shpool->mutex);
   if(shdata->worker_slots) {
@@ -140,7 +142,7 @@ ngx_int_t ipc_init_module(ipc_t *ipc, ngx_cycle_t *cycle) {
 ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   ngx_slab_pool_t                *shpool = (ngx_slab_pool_t *)ipc->shm_zone->shm.addr;
   ipc_shm_data_t                 *shdata = ipc->shm_zone->data;
-  ngx_int_t                       max_workers = ipc->configured_worker_process_count;
+  ngx_int_t                       max_workers = ipc->worker_process_count;
   int                             i, found = 0;
   worker_slot_tracking_t         *workerslot;
   
@@ -193,7 +195,7 @@ ngx_int_t ipc_exit_master(ipc_t *ipc, ngx_cycle_t *cycle) {
 
 ngx_pid_t ipc_get_pid(ipc_t *ipc, int process_slot) {
   ipc_shm_data_t         *shdata = ipc->shm_zone->data;
-  int                     max_workers = ipc->configured_worker_process_count;
+  int                     max_workers = ipc->worker_process_count;
   int                     i;
   worker_slot_tracking_t *worker_slots = shdata->worker_slots;
   
@@ -206,7 +208,7 @@ ngx_pid_t ipc_get_pid(ipc_t *ipc, int process_slot) {
 }
 ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid) {
   ipc_shm_data_t         *shdata = ipc->shm_zone->data;
-  int                     max_workers = ipc->configured_worker_process_count;
+  int                     max_workers = ipc->worker_process_count;
   int                     i;
   worker_slot_tracking_t *worker_slots = shdata->worker_slots;
   
@@ -732,7 +734,7 @@ ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t worker_pid, ngx_str_t *name, ngx_s
 
 ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data) {
   ipc_shm_data_t         *shdata = ipc->shm_zone->data;
-  int                     max_workers = ipc->configured_worker_process_count;
+  int                     max_workers = ipc->worker_process_count;
   int                     i;
   worker_slot_tracking_t *worker_slots = shdata->worker_slots;
   
