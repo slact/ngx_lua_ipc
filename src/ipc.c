@@ -109,6 +109,7 @@ ngx_int_t ipc_init_config(ipc_t *ipc, ngx_conf_t *cf, ngx_module_t *module, char
     return NGX_ERROR;
   }
   
+  ipc->name = name;
   ipc->worker_process_count = NGX_ERROR;
   
   return NGX_OK;
