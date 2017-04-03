@@ -11,6 +11,7 @@ clang_sanitize_addres="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
 optimize_level=0;
 
+export WITH_HTTP_SSL=1
 export CONFIGURE_WITH_DEBUG=0
 _extra_config_opt=()
 
@@ -80,6 +81,9 @@ for opt in $*; do
       export CC="clang"
       export CLANG_ANALYZER=$MY_PATH/clang-analyzer
       mkdir $CLANG_ANALYZER 2>/dev/null
+      ;;
+    nossl|no_ssl)
+      export WITH_HTTP_SSL=""
       ;;
     stub_status)
       export WITH_STUB_STATUS_MODULE=1

@@ -253,9 +253,12 @@ build() {
     --http-uwsgi-temp-path=${_tmp_path}/uwsgi_temp
     --http-log-path=${_access_log}
     --error-log-path=${_error_log}
-    --with-http_ssl_module
   )
 
+if [[ -n $WITH_HTTP_SSL ]]; then
+  CONFIGURE+=( --with-http_ssl_module )
+fi
+  
 if [[ -z $USE_OPENRESTY ]]; then
   CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}"
                "--add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}")
