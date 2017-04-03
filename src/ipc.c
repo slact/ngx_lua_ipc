@@ -92,7 +92,7 @@ ngx_int_t ipc_init_config(ipc_t *ipc, ngx_conf_t *cf, ngx_module_t *module, char
 
   
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
-    chan = &ipc->process[i];
+    chan = &ipc->worker_channel[i];
     chan->ipc = ipc;
     chan->pipe[0]=NGX_INVALID_FILE;
     chan->pipe[1]=NGX_INVALID_FILE;
@@ -222,7 +222,7 @@ ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid) {
 }
 
 ngx_int_t ipc_set_worker_alert_handler(ipc_t *ipc, ipc_alert_handler_pt alert_handler) {
-  ipc->handler=alert_handler;
+  ipc->worker_alert_handler=alert_handler;
   return NGX_OK;
 }
 
@@ -261,7 +261,7 @@ static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, voi
       slot_callback(s, i);
     }
     
-    worker_channel = &ipc->process[s];
+    worker_channel = &ipc->worker_channel[s];
 
     socks = worker_channel->pipe;
     
@@ -309,7 +309,7 @@ ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
   ipc_alert_link_t         *cur, *cur_next;
   
   for (i=0; i<NGX_MAX_PROCESSES; i++) {
-    chan = &ipc->process[i];
+    chan = &ipc->worker_channel[i];
     if(!chan->active) continue;
     
     if(chan->c) {
@@ -329,7 +329,7 @@ ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
     
     ipc_try_close_fd(&chan->pipe[0]);
     ipc_try_close_fd(&chan->pipe[1]);
-    ipc->process[i].active = 0;
+    ipc->worker_channel[i].active = 0;
   }
   return NGX_OK;
 }
@@ -420,7 +420,7 @@ static ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
     
-    chan = &ipc->process[i];
+    chan = &ipc->worker_channel[i];
     
     if(!chan->active) continue;
     
@@ -590,7 +590,7 @@ static ngx_int_t parsebuf(ipc_t *ipc, ipc_readbuf_t *rbuf) {
       data.data = name.data + name.len;
       data.len = rbuf->body.len - name.len;
       
-      ipc->handler(rbuf->header.src_slot, &name, &data);
+      ipc->worker_alert_handler(rbuf->header.src_slot, &name, &data);
       rbuf->cur += rbuf->body.len;
       return parsebuf_reset_readbuf(rbuf);
     }
@@ -650,7 +650,7 @@ static void ipc_read_handler(ngx_event_t *ev) {
     return;
   }
   c = ev->data;
-  ipc_channel = &((ipc_t *)c->data)->process[ngx_process_slot];
+  ipc_channel = &((ipc_t *)c->data)->worker_channel[ngx_process_slot];
   
   rc = ipc_read(ipc_channel, &ipc_channel->rbuf, ev->log);
   if (rc == NGX_ERROR) {
@@ -671,7 +671,7 @@ static void ipc_read_handler(ngx_event_t *ev) {
 ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data) {
   
   ipc_alert_link_t   *alert;
-  ipc_channel_t      *chan = &ipc->process[slot];
+  ipc_channel_t      *chan = &ipc->worker_channel[slot];
   ipc_writebuf_t     *wb = &chan->wbuf;
   size_t              alert_str_size = 0;
   u_char             *end;
@@ -687,7 +687,7 @@ ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t 
   DBG("IPC send alert '%V' (data:'%V') to slot %i", name, data, slot);
   
   if(slot == ngx_process_slot) {
-    ipc->handler(slot, name, data);
+    ipc->worker_alert_handler(slot, name, data);
     return NGX_OK;
   }
   

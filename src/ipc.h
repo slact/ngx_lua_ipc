@@ -49,9 +49,9 @@ typedef void (*ipc_alert_handler_pt)(ngx_int_t alert_sender_slot, ngx_str_t *ale
 struct ipc_s {
   const char            *name;
   ngx_shm_zone_t        *shm_zone;
-  ipc_channel_t          process[NGX_MAX_PROCESSES];
+  ipc_channel_t          worker_channel[NGX_MAX_PROCESSES];
   ngx_int_t              worker_process_count;
-  ipc_alert_handler_pt   handler;
+  ipc_alert_handler_pt   worker_alert_handler;
 }; //ipc_t
 
 //IPC needs to be initialized in three steps (pre, during, or post)-config, init_module, and init_worker
