@@ -44,10 +44,8 @@ typedef struct {
   unsigned               active:1;
 } ipc_comm_t;
 
-typedef enum {NGX_IPC_NOTREADY, NGX_IPC_INIT_CONFIG, NGX_IPC_INIT_MODULE, NGX_IPC_INIT_WORKER, NGX_IPC_READY} ipc_status_t;
 
 struct ipc_s {
-  ipc_status_t           status;
   const char            *name;
   ngx_shm_zone_t        *shm_zone;
   ipc_comm_t             process[NGX_MAX_PROCESSES];
