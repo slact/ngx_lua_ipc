@@ -263,9 +263,11 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   
   //listener timer now!!
   if(hacktimer && hacktimer->timer.key > ngx_current_msec) {
-    DBG("run hacked timer next cycle: %p", hacktimer);
+    DBG("run hacked timer right now: %p", hacktimer);
+    
     ngx_del_timer(hacktimer);
-    ngx_add_timer(hacktimer, 0);
+    hacktimer->handler(hacktimer);
+    //ngx_add_timer(hacktimer, 0); //the slow way to do it -- run it next cycle
   }
   else if(!hacktimer) {
     DBG("timer handler running right now");
