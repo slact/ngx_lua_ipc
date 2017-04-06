@@ -1,6 +1,5 @@
 #include <ngx_lua_ipc.h>
 #include <ipc.h>
-#include <shmem.h>
 #include <lauxlib.h>
 #include "ngx_http_lua_api.h"
 
