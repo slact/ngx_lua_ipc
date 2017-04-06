@@ -19,7 +19,7 @@ if [[ -z $NO_DEBUG ]]; then
   CFLAGS=" -ggdb -fvar-tracking-assignments -O$OPTIMIZE_LEVEL"
 fi
 
-CFLAGS="$CFLAGS -Wno-error -Wall -Wextra -Wno-unused-parameter -Wpointer-arith -Wshadow -Wnested-externs -Wsign-compare"
+CFLAGS="$CFLAGS -Wno-error -Wall -Wextra -Wno-unused-parameter -Wpointer-sign -Wpointer-arith -Wshadow -Wnested-externs -Wsign-compare"
 if [[ $SANITIZE_UNDEFINED == 1 ]]; then
     CFLAGS="$CFLAGS -fsanitize=undefined -fsanitize=shift -fsanitize=integer-divide-by-zero -fsanitize=unreachable -fsanitize=vla-bound -fsanitize=null -fsanitize=return -fsanitize=bounds -fsanitize=alignment -fsanitize=object-size -fsanitize=float-divide-by-zero -fsanitize=float-cast-overflow -fsanitize=nonnull-attribute -fsanitize=returns-nonnull-attribute -fsanitize=enum -lubsan"
 fi
@@ -48,7 +48,7 @@ _semver_gteq() {
   fi
 }
 
-if [[ $NO_POOL == 1 ]]; then
+if [[ $NO_POOL == 1 ]] && [[ -z $USE_OPENRESTY ]]; then
   _nginx_ver=$_nginx_ver_nopool
 elif [[ $NGINX_LEGACYVERSION == 1 ]]; then
   _nginx_ver=$_nginx_ver_legacy
@@ -200,6 +200,13 @@ if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
   md5sums+=( 'SKIP')
 fi
 
+if [[ $NO_POOL == 1 ]] && [[ -z $USE_OPENRESTY ]]; then
+  source+=( "$_no_pool_patch_source" )
+  md5sums+=( 'SKIP')
+fi
+
+
+
 build() {
   local _src_dir="${srcdir}/${_extracted_dir}"
   #ln -sfT "$_src_dir" "$srcdir/nginx"
@@ -210,7 +217,13 @@ build() {
   if [[ -z $CONTINUE ]] && [[ -z $NO_EXTRACT_SOURCE ]]; then
     if [[ $NO_POOL == 1 ]]; then
       echo "using the no-pool patch"
-      patch -p1 < "${srcdir}/nginx-${_nginx_ver}-no_pool.patch"
+      if [[ -n $USE_OPENRESTY ]]; then
+        pushd bundle
+        patch -p0 < "./nginx-no_pool.patch"
+        popd
+      else
+        patch -p1 < "${srcdir}/nginx-${_nginx_ver}-no_pool.patch"
+      fi
     fi
     if [[ $NGX_SLAB_PATCH == 1 ]]; then
       echo "using the ngx_slab patch to fix large alloc/frees"
@@ -255,14 +268,14 @@ build() {
     --error-log-path=${_error_log}
   )
 
-if [[ -n $WITH_HTTP_SSL ]]; then
-  CONFIGURE+=( --with-http_ssl_module )
-fi
-  
-if [[ -z $USE_OPENRESTY ]]; then
-  CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}"
-               "--add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}")
-fi
+  if [[ -n $WITH_HTTP_SSL ]]; then
+    CONFIGURE+=( --with-http_ssl_module )
+  fi
+    
+  if [[ -z $USE_OPENRESTY ]]; then
+    CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}"
+                "--add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}")
+  fi
 
   if [[ -n $WITH_STREAM_MODULE ]]; then
     CONFIGURE+=( --with-stream )
@@ -343,6 +356,9 @@ fi
     else
       ./configure ${CONFIGURE[@]}
     fi
+    
+    
+    ln -sf ${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}/src ../ngx_lua_ipc/src/lua-nginx-module-source > /dev/null
     
     make
   fi

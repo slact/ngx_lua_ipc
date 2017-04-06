@@ -158,10 +158,6 @@ if [[ -f "$_dynamic_module" ]]; then
   sed "s|^\s*#load_module.*|load_module \"${_dynamic_module}\";|g" $NGINX_TEMP_CONFIG -i
 fi
 
-ln -sf $DEVDIR/nginx $SRCDIR/nginx >/dev/null
-ln -sf $DEVDIR/nginx-nchan/src/nginx/src/ $SRCDIR/nginx-source >/dev/null
-
-
 debugger_pids=()
 
 TRAPINT() {

@@ -122,6 +122,7 @@ _build_nginx() {
     return 0
   fi
 
+  export NO_MAKEPKG=1
   export NO_NGINX_USER=1
   export NO_GCC_COLOR=1
   export startdir="$(pwd)"
@@ -140,6 +141,9 @@ _build_nginx() {
   
   wget --no-clobber $_source
   wget --no-clobber $_no_pool_patch_source
+  wget --no-clobber $_lua_nginx_module_url
+  wget --no-clobber $_lua_upstream_nginx_module_url
+  
   if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
     wget --no-clobber $_lua_stream_module_src
   fi
@@ -157,6 +161,9 @@ _build_nginx() {
       git pull
       popd
     fi
+    
+    tar xf "../v${_lua_nginx_module_ver}.tar.gz"
+    tar xf "../v${_lua_upstream_nginx_module_ver}.tar.gz"
     
     if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
       tar xf "../v${_lua_stream_module_ver}.tar.gz"
@@ -211,6 +218,8 @@ if [[ -z $NO_MAKE ]]; then
   pushd ./nginx-pkg >/dev/null
   
   _build_nginx
+  ln -sf "${MY_PATH}/nginx" "${_src_dir}/nginx" >/dev/null
+  ln -sf "${MY_PATH}/nginx-pkg/src/nginx/src/" "${_src_dir}/nginx-source" >/dev/null
   
   popd >/dev/null
 fi
