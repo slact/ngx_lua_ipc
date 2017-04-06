@@ -1,10 +1,10 @@
 Interprocess communication for lua_nginx_module and openresty. Send named alerts with string data between Nginx worker processes.
 
-Asynchronous, nonblocking, non-locking.
+Asynchronous, nonblocking, non-locking, and *fast*!
 
 ### History 
 
-I wrote this as a quick hack to separate the [interprocess code](https://github.com/slact/nchan/tree/master/src/store/memory) out of [Nchan](https://github.com/slact/nchan) mostly on a flight back from Nginx Conf 2016. The completion of this module was generously sponsored by [ring.com](https://ring.com). Thanks guys!
+I wrote this as a quick hack to separate the [interprocess code](https://github.com/slact/nchan/tree/master/src/store/memory) out of [Nchan](https://github.com/slact/nchan) mostly on a flight back from [Nginx Conf 2016](https://www.nginx.com/nginxconf/2016). The completion of this module was generously sponsored by [ring.com](https://ring.com). Thanks guys!
 
 # API
 
