@@ -93,3 +93,13 @@
    fun:ngx_init_cycle
    fun:main
 }
+
+{
+   <crc32-table>
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   fun:malloc
+   fun:ngx_alloc
+   fun:ngx_crc32_table_init
+   fun:main
+}
