@@ -6,6 +6,8 @@
 #include <assert.h>
 #include "ipc.h"
 
+#include <sys/mman.h>
+
 #define IPC_UINT16_MAXLEN (sizeof("65536")-1)
 #define IPC_UINT32_MAXLEN (sizeof("4294967295")-1)
 #define IPC_MAX_HEADER_LEN (IPC_UINT16_MAXLEN   + 1 + IPC_UINT32_MAXLEN + 1 + IPC_UINT16_MAXLEN + 1)
@@ -29,52 +31,10 @@ typedef struct {
 
 typedef struct {
   worker_slot_tracking_t   *worker_slots;
+  ngx_shmtx_sh_t            lock;
+  ngx_shmtx_t               mutex;
+  
 } ipc_shm_data_t;
-
-static ngx_int_t shm_init_callback(ngx_shm_zone_t *zone, void *data) {
-  ipc_shm_data_t         *d;
-  if(data) { //zone being passed after restart
-    zone->data = data;
-    d = zone->data;
-  }
-  else {
-    ngx_slab_pool_t    *shpool = (ngx_slab_pool_t *)zone->shm.addr;
-    ngx_slab_init(shpool);
-    
-    
-    if((d = ngx_slab_alloc(shpool, sizeof(*d))) != NULL) {
-      ngx_memzero(d, sizeof(*d));
-    }
-    else {
-      return NGX_ERROR;
-    }
-    
-    zone->data = d;
-  }
-  return NGX_OK;
-}
-
-static ngx_shm_zone_t *ipc_shm_create(char *name, ngx_module_t *module, ngx_conf_t *cf, size_t shm_size, ngx_int_t (*init)(ngx_shm_zone_t *, void *)) {
-  u_char                          zone_name_buf[1024];
-  ngx_snprintf(zone_name_buf, 1024, "ngx_ipc: %s", name);
-  ngx_str_t                       zone_name = ngx_string(zone_name_buf);
-
-  ngx_shm_zone_t    *shm_zone;
-
-  shm_size = ngx_align(shm_size, ngx_pagesize);
-  if (shm_size < ngx_pagesize) {
-    shm_size = ngx_pagesize;
-  }
-  shm_zone = ngx_shared_memory_add(cf, &zone_name, shm_size, module);
-  if (shm_zone == NULL) {
-    return NULL;
-  }
-  shm_zone->init = shm_init_callback;
-  shm_zone->data = (void *) 1;
-  return shm_zone;
-}
-//end shared memory stuff
-
 
 
 static void ipc_worker_read_handler(ngx_event_t *ev);
@@ -83,8 +43,7 @@ static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf);
 
 static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker));
 static ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle);
-static ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle);
-
+static ngx_int_t ipc_close_channel(ipc_channel_t *chan);
 
 
 static ngx_int_t ipc_init_channel(ipc_t *ipc, ipc_channel_t *chan) {
@@ -101,51 +60,47 @@ static ngx_int_t ipc_init_channel(ipc_t *ipc, ipc_channel_t *chan) {
   return NGX_OK;
 }
 
-ngx_int_t ipc_init_config(ipc_t *ipc, ngx_conf_t *cf, ngx_module_t *module, char *name) {
+static ipc_t *ipc_create(const char *ipc_name) {
+  ipc_t *ipc=malloc(sizeof(*ipc));
+  ngx_memzero(ipc, sizeof(*ipc));
   int                             i = 0;
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
     ipc_init_channel(ipc, &ipc->worker_channel[i]);
   }
   
-  ipc->shm_zone = ipc_shm_create(name, module, cf, NGX_MAX_PROCESSES * sizeof(worker_slot_tracking_t) * 2, shm_init_callback);
-  if(!ipc->shm_zone) { 
-    return NGX_ERROR;
-  }
+  ipc->shm = NULL;
+  ipc->shm_sz = 0;
   
-  ipc->name = name;
+  ipc->name = ipc_name;
   ipc->worker_process_count = NGX_ERROR;
   
-  return NGX_OK;
+  return ipc;
 }
 
-ngx_int_t ipc_init_module(ipc_t *ipc, ngx_cycle_t *cycle) {
+ipc_t *ipc_init_module(const char *ipc_name, ngx_cycle_t *cycle) {
+  ipc_t                          *ipc = ipc_create(ipc_name);
   ngx_core_conf_t                *ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
   ngx_int_t                       max_workers = ccf->worker_processes;
-  ngx_slab_pool_t                *shpool = (ngx_slab_pool_t *)ipc->shm_zone->shm.addr;
-  ipc_shm_data_t                 *shdata = ipc->shm_zone->data;
-  size_t                          workerslots_sz = sizeof(*shdata->worker_slots) * max_workers;
+  size_t                          workerslots_sz = sizeof(worker_slot_tracking_t) * max_workers;
+  ipc_shm_data_t                 *shdata;
+  
   
   ipc->worker_process_count = max_workers;
   
-  ngx_shmtx_lock(&shpool->mutex);
-  if(shdata->worker_slots) {
-    ngx_slab_free_locked(shpool, shdata->worker_slots);
-    shdata->worker_slots = NULL;
-  }
+  ipc->shm_sz = sizeof(ipc_shm_data_t) + workerslots_sz;
+  ipc->shm = mmap(NULL, ipc->shm_sz, PROT_READ|PROT_WRITE, MAP_ANON|MAP_SHARED, -1, 0);
+  shdata = ipc->shm;
+  ngx_memzero(shdata, sizeof(*shdata));
+  shdata->worker_slots = (worker_slot_tracking_t *)&shdata[1];
   
-  if((shdata->worker_slots = ngx_slab_alloc_locked(shpool, workerslots_sz)) != NULL) {
-    ngx_memzero(shdata->worker_slots, workerslots_sz);
-  }
-  
-  ngx_shmtx_unlock(&shpool->mutex);
+  ngx_shmtx_create(&shdata->mutex, &shdata->lock, (u_char *)ipc_name);
   
   ipc_open(ipc, cycle, max_workers, NULL);
-  return NGX_OK;
+  return ipc;
 }
 
 ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
-  ngx_slab_pool_t                *shpool = (ngx_slab_pool_t *)ipc->shm_zone->shm.addr;
-  ipc_shm_data_t                 *shdata = ipc->shm_zone->data;
+  ipc_shm_data_t                 *shdata = ipc->shm;
   ngx_int_t                       max_workers = ipc->worker_process_count;
   int                             i, found = 0;
   worker_slot_tracking_t         *workerslot;
@@ -155,7 +110,7 @@ ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
     return NGX_OK;
   }
   
-  ngx_shmtx_lock(&shpool->mutex);
+  ngx_shmtx_lock(&shdata->mutex);
   
   for(i=0; !found && i<max_workers; i++) {
     workerslot = &shdata->worker_slots[i];
@@ -169,7 +124,7 @@ ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
     }
   }
   
-  ngx_shmtx_unlock(&shpool->mutex);
+  ngx_shmtx_unlock(&shdata->mutex);
   
   if(found) {
     workerslot->pid = ngx_pid;
@@ -183,22 +138,21 @@ ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   return NGX_OK;  
 }
 
-
-ngx_int_t ipc_exit_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
-  return ipc_close(ipc, cycle);
-}
-ngx_int_t ipc_exit_master(ipc_t *ipc, ngx_cycle_t *cycle) {
-  ngx_int_t            rc;
-  ngx_slab_pool_t     *shpool = (ngx_slab_pool_t *)ipc->shm_zone->shm.addr;
-  ipc_shm_data_t      *shdata = ipc->shm_zone->data;
+ngx_int_t ipc_destroy(ipc_t *ipc) {
+  int                  i;
   
-  rc = ipc_close(ipc, cycle);
-  ngx_slab_free(shpool, shdata);
-  return rc;
+  for (i=0; i<NGX_MAX_PROCESSES; i++) {
+    ipc_close_channel(&ipc->worker_channel[i]);
+    ipc->worker_channel[i].active = 0;
+  }
+  
+  munmap(ipc->shm, ipc->shm_sz);
+  free(ipc);
+  return NGX_OK;
 }
 
 ngx_pid_t ipc_get_pid(ipc_t *ipc, int process_slot) {
-  ipc_shm_data_t         *shdata = ipc->shm_zone->data;
+  ipc_shm_data_t         *shdata = ipc->shm;
   int                     max_workers = ipc->worker_process_count;
   int                     i;
   worker_slot_tracking_t *worker_slots = shdata->worker_slots;
@@ -211,7 +165,7 @@ ngx_pid_t ipc_get_pid(ipc_t *ipc, int process_slot) {
   return NGX_INVALID_PID;
 }
 ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid) {
-  ipc_shm_data_t         *shdata = ipc->shm_zone->data;
+  ipc_shm_data_t         *shdata = ipc->shm;
   int                     max_workers = ipc->worker_process_count;
   int                     i;
   worker_slot_tracking_t *worker_slots = shdata->worker_slots;
@@ -237,7 +191,7 @@ static void ipc_try_close_fd(ngx_socket_t *fd) {
 }
 
 static ngx_int_t ipc_activate_channel(ipc_t *ipc, ngx_cycle_t *cycle, ipc_channel_t *channel, ipc_socket_type_t socktype) {
-  int                             rc;
+  int                             rc = NGX_OK;
   ngx_socket_t                   *socks = channel->pipe;
   if(channel->active) {
     // reinitialize already active pipes. This is done to prevent IPC alerts
@@ -345,17 +299,6 @@ static ngx_int_t ipc_close_channel(ipc_channel_t *chan) {
   
   return NGX_OK;
 }
-
-ngx_int_t ipc_close(ipc_t *ipc, ngx_cycle_t *cycle) {
-  int i;
-  
-  for (i=0; i<NGX_MAX_PROCESSES; i++) {
-    ipc_close_channel(&ipc->worker_channel[i]);
-    ipc->worker_channel[i].active = 0;
-  }
-  return NGX_OK;
-}
-
 
 static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *alert) {
   int          n;
@@ -760,7 +703,7 @@ ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t worker_pid, ngx_str_t *name, ngx_s
 }
 
 ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data) {
-  ipc_shm_data_t         *shdata = ipc->shm_zone->data;
+  ipc_shm_data_t         *shdata = ipc->shm;
   int                     max_workers = ipc->worker_process_count;
   int                     i;
   worker_slot_tracking_t *worker_slots = shdata->worker_slots;

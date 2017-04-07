@@ -31,7 +31,7 @@
           luaL_dostring(lua_state, ngx_ipc_lua_scripts.name)
 #endif
 
-static ipc_t                         ipc;
+static ipc_t                        *ipc = NULL;
 
 // lua for the ipc alert handlers will be run from this timer's context
 static ngx_event_t                  *hacktimer = NULL;
@@ -211,7 +211,7 @@ static int ngx_lua_ipc_send_alert(lua_State *L) {
   ngx_str_t      name, data;
   ngx_lua_ipc_get_alert_args(L, 1, &name, &data);
   
-  rc = ipc_alert_pid(&ipc, target_worker_pid, &name, &data);
+  rc = ipc_alert_pid(ipc, target_worker_pid, &name, &data);
   
   lua_pushboolean(L, rc == NGX_OK);
   return 1;
@@ -222,7 +222,7 @@ static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
   ngx_int_t      rc;
   ngx_lua_ipc_get_alert_args(L, 0, &name, &data);
 
-  rc = ipc_alert_all_workers(&ipc, &name, &data);
+  rc = ipc_alert_all_workers(ipc, &name, &data);
   
   lua_pushboolean(L, rc == NGX_OK);
   return 1;
@@ -241,7 +241,7 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   assert(alert);
   
   alert->sender_slot = sender_slot;
-  alert->sender_pid = ipc_get_pid(&ipc, sender_slot);
+  alert->sender_pid = ipc_get_pid(ipc, sender_slot);
   
   alert->name.data = (u_char *)&alert[1];
   alert->name.len = name->len;
@@ -310,8 +310,6 @@ static int ngx_lua_ipc_init_lua_code(lua_State * L) {
 }
 
 static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
-
-  ipc_init_config(&ipc, cf, &ngx_lua_ipc_module, "ngx_lua_ipc");
   
   if (ngx_http_lua_add_package_preload(cf, "ngx.ipc", ngx_lua_ipc_init_lua_code) != NGX_OK) {
     return NGX_ERROR;
@@ -321,22 +319,25 @@ static ngx_int_t ngx_lua_ipc_init_postconfig(ngx_conf_t *cf) {
 }
 static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
   
-  ipc_init_module(&ipc, cycle);
-  ipc_set_worker_alert_handler(&ipc, ngx_lua_ipc_alert_handler);
+  if(ipc) { //ipc already exists. destroy it!
+    ipc_destroy(ipc);
+  }
+  ipc = ipc_init_module("ngx_lua_ipc", cycle);
+  ipc_set_worker_alert_handler(ipc, ngx_lua_ipc_alert_handler);
   
   return NGX_OK;
 }
 
 static ngx_int_t ngx_lua_ipc_init_worker(ngx_cycle_t *cycle) {
-  return ipc_init_worker(&ipc, cycle);
+  return ipc_init_worker(ipc, cycle);
 }
 
 static void ngx_lua_ipc_exit_worker(ngx_cycle_t *cycle) { 
-  ipc_exit_worker(&ipc, cycle);
+  ipc_destroy(ipc);
 }
 
 static void ngx_lua_ipc_exit_master(ngx_cycle_t *cycle) {
-  ipc_exit_master(&ipc, cycle);
+  ipc_destroy(ipc);
 }
 
 static ngx_command_t  ngx_lua_ipc_commands[] = {
