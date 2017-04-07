@@ -103,6 +103,10 @@ for opt in $*; do
       export WITH_LUA_STREAM_MODULE=1
       export WITH_STREAM_MODULE=1
       ;;
+    luajit)
+      export LUAJIT_INC=/usr/include/luajit-2.1
+      export LUAJIT_LIB=/usr/lib/
+      ;;
     --*)
       _extra_config_opt+=( "$opt" )
   esac
