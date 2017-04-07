@@ -5,7 +5,7 @@ _nginx_ver_nopool=1.11.2
 _nginx_ver_legacy=1.8.1
 _nginx_ver_old=1.6.3
 _nginx_ver_very_old=0.8.55
-_lua_nginx_module_ver="0.10.7"
+_lua_nginx_module_ver="master"
 _lua_upstream_nginx_module_ver="0.06"
 
 _openresty_ver=1.11.2.2
@@ -154,7 +154,13 @@ _openresty_source="https://openresty.org/download/openresty-${_openresty_ver}.ta
 _nginx_git_source="git+https://github.com/nginx/nginx.git${_nginx_git_source_fragment}"
 
 _no_pool_patch_source="https://raw.github.com/shrimp/no-pool-nginx/master/nginx-${_nginx_ver_nopool}-no_pool.patch"
-_lua_nginx_module_url="https://github.com/openresty/lua-nginx-module/archive/v${_lua_nginx_module_ver}.tar.gz"
+
+if [[ $_lua_nginx_module_ver == "master" ]]; then
+  _lua_nginx_module_url="git+https://github.com/openresty/lua-nginx-module.git"
+else
+  _lua_nginx_module_url="https://github.com/openresty/lua-nginx-module/archive/v${_lua_nginx_module_ver}.tar.gz"
+fi
+
 _lua_upstream_nginx_module_url="https://github.com/openresty/lua-upstream-nginx-module/archive/v${_lua_upstream_nginx_module_ver}.tar.gz"
 _ngx_debug_pool_url="https://github.com/chobits/ngx_debug_pool.git"
 _ngx_echo_module="https://github.com/openresty/echo-nginx-module/archive/v${_ngx_echo_module_ver}.tar.gz"
@@ -273,8 +279,12 @@ build() {
   fi
     
   if [[ -z $USE_OPENRESTY ]]; then
-    CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}"
-                "--add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}")
+    if [[ $_lua_nginx_module_ver == "master" ]]; then
+      CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module")
+    else
+      CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}")
+    fi
+    CONFIGURE+=("--add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}")
   fi
 
   if [[ -n $WITH_STREAM_MODULE ]]; then
