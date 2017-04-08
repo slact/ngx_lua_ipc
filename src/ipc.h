@@ -2,14 +2,14 @@ typedef struct ipc_alert_link_s ipc_alert_link_t;
 struct ipc_alert_link_s {
   ipc_alert_link_t *next;
   ngx_str_t         buf;
-  uint16_t          sent;
+  uint32_t          sent;
 };
 
 typedef struct ipc_writebuf_s ipc_writebuf_t;
 struct ipc_writebuf_s {
   ipc_alert_link_t         *head;
   ipc_alert_link_t         *tail;
-  uint16_t                  n;
+  uint32_t                  n;
 }; //ipc_writebuf_t
 
 typedef struct {

@@ -311,7 +311,7 @@ static ngx_int_t ipc_close_channel(ipc_channel_t *chan) {
 static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *alert) {
   int          n;
   ngx_int_t    err;
-  uint16_t     unsent;
+  int32_t      unsent;
   u_char      *data;
  
   unsent = alert->buf.len - alert->sent;
