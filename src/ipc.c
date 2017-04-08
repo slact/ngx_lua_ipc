@@ -722,3 +722,17 @@ ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data) {
   return NGX_OK;
 }
 
+ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count) {
+  static ngx_pid_t pid_array[NGX_MAX_PROCESSES + NGX_MAX_HELPER_PROCESSES];
+  ipc_shm_data_t         *shdata = ipc->shm;
+  int i;
+  for(i=0; i<ipc->worker_process_count; i++) {
+    pid_array[i] = shdata->process_slots[i].pid;
+  }
+  if(pid_count) {
+    *pid_count = ipc->worker_process_count;
+  }
+  
+  return pid_array;
+}
+

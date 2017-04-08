@@ -72,6 +72,8 @@ ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid);
 
 ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data);
 ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t pid, ngx_str_t *name, ngx_str_t *data);
+ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count); //useful for debugging
+
 ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data); //poor man's broadcast
 
 
