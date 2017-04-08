@@ -280,6 +280,24 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   
 }
 
+static int ngx_lua_ipc_get_other_worker_pids(lua_State *L) {
+  int             i, ti=1, n;
+  ngx_pid_t      *pids;
+  
+  pids = ipc_get_worker_pids(ipc, &n);
+  
+  lua_createtable(L, n-1, 0);
+  
+  for(i=0; i<n; i++) {
+    if(pids[i] != ngx_pid) {
+      lua_pushnumber(L, pids[i]);
+      lua_rawseti(L, -2, ti++);
+    }
+  }
+  
+  return 1;
+}
+
 static int ngx_lua_ipc_init_lua_code(lua_State * L) {
   
   int t = lua_gettop(L) + 1;
@@ -306,6 +324,9 @@ static int ngx_lua_ipc_init_lua_code(lua_State * L) {
   
   lua_newtable(L); //handlers table
   lua_setfield(L, t, "handlers");
+  
+  lua_pushcfunction(L, ngx_lua_ipc_get_other_worker_pids);
+  lua_setfield(L, t, "get_other_worker_pids"); //useful for debugging
   return 1;
 }
 
