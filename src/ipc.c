@@ -132,7 +132,7 @@ ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
     procslot->pid = ngx_pid;
     procslot->slot = ngx_process_slot; 
     procslot->process_type = ngx_process;
-    ERR("ADD  process %i slot %i type %i", ngx_pid, ngx_process_slot, ngx_process);
+    DBG("ADD  process %i slot %i type %i", ngx_pid, ngx_process_slot, ngx_process);
     shdata->process_count++;
   }
   ngx_shmtx_unlock(&shdata->mutex);
@@ -141,7 +141,7 @@ ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
     return ipc_register_worker(ipc, cycle);
   }
   else {
-    ERR("SKIP process %i slot %i type %i", ngx_pid, ngx_process_slot, ngx_process);
+    DBG("SKIP process %i slot %i type %i", ngx_pid, ngx_process_slot, ngx_process);
     return NGX_ERROR;
   }
 }
