@@ -2,36 +2,41 @@ typedef struct ipc_alert_link_s ipc_alert_link_t;
 struct ipc_alert_link_s {
   ipc_alert_link_t *next;
   ngx_str_t         buf;
-  uint32_t          sent;
 };
 
 typedef struct ipc_writebuf_s ipc_writebuf_t;
 struct ipc_writebuf_s {
   ipc_alert_link_t         *head;
   ipc_alert_link_t         *tail;
+  ngx_str_t                 last_pkt;
   uint32_t                  n;
 }; //ipc_writebuf_t
 
+
 typedef struct {
-  struct {
-    size_t   code;
-    size_t   name_len;
-    uint16_t src_slot;
-    uint8_t  separators_seen;
-    unsigned complete:1;
-  }           header;
-  
-  ngx_str_t   body;
-  
-  unsigned    complete:1;
-  
-  char       *buf;
-  char       *buf_last;
-  char       *cur;
-  char       *last;
-  
-  size_t      read_next_bytes;
-} ipc_readbuf_t;
+  ngx_pid_t  src_pid;
+  uint32_t   pkt_len;
+  uint32_t   tot_len;
+  uint16_t   name_len;
+  uint16_t   src_slot;
+  u_char     ctrl; // '$': whole, '>': part start, '+': part piece
+} ipc_packet_header_t;
+
+#define IPC_PKT_HEADER_SIZE    (sizeof(ipc_packet_header_t))
+#define IPC_PKT_MAX_BODY_SIZE  (PIPE_BUF - IPC_PKT_HEADER_SIZE)
+
+typedef struct {
+  ipc_packet_header_t  header;
+  u_char               body[IPC_PKT_MAX_BODY_SIZE];
+} ipc_packet_buf_t;
+
+typedef struct ipc_readbuf_s ipc_readbuf_t;
+struct ipc_readbuf_s {
+  ipc_readbuf_t      *prev;
+  ipc_readbuf_t      *next;
+  u_char             *body_cur;
+  ipc_packet_buf_t    pkt;
+}; //ipc_readbuf_t
 
 typedef struct ipc_s ipc_t;
 
@@ -43,11 +48,11 @@ typedef struct {
   ngx_connection_t      *read_conn;
   ngx_connection_t      *write_conn;
   ipc_writebuf_t         wbuf;
-  ipc_readbuf_t          rbuf;
+  ipc_readbuf_t         *rbuf_head;
   unsigned               active:1;
 } ipc_channel_t;
 
-typedef void (*ipc_alert_handler_pt)(ngx_int_t alert_sender_slot, ngx_str_t *alert_name, ngx_str_t *alert_data);
+typedef void (*ipc_alert_handler_pt)(ngx_pid_t alert_sender_pid, ngx_int_t alert_sender_slot, ngx_str_t *alert_name, ngx_str_t *alert_data);
 
 struct ipc_s {
   const char            *name;

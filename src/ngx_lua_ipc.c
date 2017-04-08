@@ -41,7 +41,7 @@ static int                           running_hacked_timer_handler = 0;
 static received_buffered_alerts_t   received_alerts = {NULL, NULL};
 
 
-static void ngx_lua_ipc_alert_handler(ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
+static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
 
 
 ngx_int_t luaL_checklstring_as_ngx_str(lua_State *L, int n, ngx_str_t *str) {
@@ -228,7 +228,7 @@ static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
   return 1;
 }
 
-static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
+static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
   
   ipc_alert_waiting_t *alert;
   
@@ -241,7 +241,7 @@ static void ngx_lua_ipc_alert_handler(ngx_int_t sender_slot, ngx_str_t *name, ng
   assert(alert);
   
   alert->sender_slot = sender_slot;
-  alert->sender_pid = ipc_get_pid(ipc, sender_slot);
+  alert->sender_pid = sender_pid;
   
   alert->name.data = (u_char *)&alert[1];
   alert->name.len = name->len;

@@ -4,16 +4,11 @@
 #include <nginx.h>
 #include <ngx_channel.h>
 #include <assert.h>
+#include <limits.h>
 #include "ipc.h"
 
+#include <sys/uio.h>
 #include <sys/mman.h>
-
-#define IPC_UINT16_MAXLEN (sizeof("65536")-1)
-#define IPC_UINT32_MAXLEN (sizeof("4294967295")-1)
-#define IPC_MAX_HEADER_LEN (IPC_UINT16_MAXLEN   + 1 + IPC_UINT32_MAXLEN + 1 + IPC_UINT16_MAXLEN + 1)
-#define IPC_MAX_READBUF_LEN 512
-// <SRC_SLOT(uint16)>|<NAME&DATA_LEN(uint32)>|<NAME_LEN(uint16)>|<NAME><DATA>
-
 
 #define DEBUG_LEVEL NGX_LOG_DEBUG
 //#define DEBUG_LEVEL NGX_LOG_WARN
@@ -40,11 +35,10 @@ typedef struct {
 
 
 static void ipc_worker_read_handler(ngx_event_t *ev);
-static ngx_int_t ipc_free_buffered_alert(ipc_alert_link_t *alert_link);
-static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf);
 
 static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker));
 static ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle);
+static void ipc_free_readbuf(ipc_channel_t *chan, ipc_readbuf_t *rbuf);
 static ngx_int_t ipc_close_channel(ipc_channel_t *chan);
 
 
@@ -58,7 +52,9 @@ static ngx_int_t ipc_init_channel(ipc_t *ipc, ipc_channel_t *chan) {
   chan->wbuf.head = NULL;
   chan->wbuf.tail = NULL;
   chan->wbuf.n = 0;
-  ngx_memzero(&chan->rbuf, sizeof(chan->rbuf));
+  chan->wbuf.last_pkt.data = NULL;
+  chan->wbuf.last_pkt.len = 0;
+  chan->rbuf_head = NULL;
   return NGX_OK;
 }
 
@@ -279,6 +275,8 @@ static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, voi
 
 static ngx_int_t ipc_close_channel(ipc_channel_t *chan) {
   ipc_alert_link_t         *cur, *cur_next;
+  ipc_readbuf_t            *rcur;
+  
   if(!chan->active) {
     return NGX_OK;
   }
@@ -294,12 +292,11 @@ static ngx_int_t ipc_close_channel(ipc_channel_t *chan) {
   
   for(cur = chan->wbuf.head; cur != NULL; cur = cur_next) {
     cur_next = cur->next;
-    ipc_free_buffered_alert(cur);
+    free(cur);
   }
   
-  if(chan->rbuf.buf) {
-    free(chan->rbuf.buf);
-    ngx_memzero(&chan->rbuf, sizeof(chan->rbuf));
+  while((rcur = chan->rbuf_head) != NULL) {
+    ipc_free_readbuf(chan, rcur);
   }
   
   ipc_try_close_fd(&chan->pipe[0]);
@@ -308,38 +305,68 @@ static ngx_int_t ipc_close_channel(ipc_channel_t *chan) {
   return NGX_OK;
 }
 
-static ngx_int_t ipc_write_buffered_alert(ngx_socket_t fd, ipc_alert_link_t *alert) {
+static ngx_int_t ipc_write_packet(ngx_socket_t fd, ngx_str_t *pkt) {
   int          n;
-  ngx_int_t    err;
-  int32_t      unsent;
-  u_char      *data;
- 
-  unsent = alert->buf.len - alert->sent;
-  data = &alert->buf.data[alert->sent];
+  size_t       maxlen = PIPE_BUF;
+  assert(pkt->len <= maxlen);
   
-  n = write(fd, data, unsent);
-  if (n == -1) {
-    err = ngx_errno;
-    if (err == NGX_EAGAIN) {
-      //ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() EAGAINED...");
-      return NGX_AGAIN;
-    }
-    
-    ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() failed");
+  n = write(fd, pkt->data, pkt->len);
+  if (n == -1 && (ngx_errno) == NGX_EAGAIN) {
+    //ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() EAGAINED...");
+    return NGX_AGAIN;
+  }
+  else if(n != (int )pkt->len) {
+    ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_errno, "write() failed with n=%i", n);
     assert(0);
     return NGX_ERROR;
   }
-  else if (n < unsent) {
-    alert->sent += n;
-    return NGX_AGAIN;
-  }
-  
+  //DBG("wrote %i byte pkt %p", n, pkt->data);
   return NGX_OK;
 }
 
-static ngx_int_t ipc_free_buffered_alert(ipc_alert_link_t *alert_link) {
-  //ngx_free(alert_link->alert.data);
-  ngx_free(alert_link);
+static ngx_int_t ipc_enqueue_tmp_pkt(ipc_writebuf_t *wb) {
+  size_t             sz;
+  ipc_alert_link_t  *link;
+  
+  if(!wb->last_pkt.data) {
+    return NGX_OK;
+  }
+  
+  sz = wb->last_pkt.len;
+  link = malloc(sizeof(*link) + sz);
+  
+  if(!link) {
+    ERR("OOM");
+    return NGX_ERROR;
+  }
+  
+  link->buf.len = sz;
+  link->buf.data = (u_char *)&link[1];
+  link->next = NULL;
+  ngx_memcpy(link->buf.data, wb->last_pkt.data, sz);
+  
+  if(!wb->head) {
+    wb->head = link;
+  }
+  if(wb->tail) {
+    wb->tail->next = link;
+  }
+  wb->tail = link;
+  wb->last_pkt.data = NULL;
+  wb->last_pkt.len = 0;
+  return NGX_OK;
+}
+
+static ngx_int_t ipc_enqueue_write_pkt(ipc_writebuf_t *wb, ipc_packet_buf_t *pkt) {
+  assert(sizeof(pkt->header) == (char *)pkt->body - (char *)pkt);
+  ngx_str_t   buf;
+  buf.data=(u_char *)pkt;
+  buf.len = IPC_PKT_HEADER_SIZE + pkt->header.pkt_len;
+  
+  ipc_enqueue_tmp_pkt(wb);
+  
+  wb->last_pkt = buf;
+  
   return NGX_OK;
 }
 
@@ -350,42 +377,42 @@ static void ipc_write_handler(ngx_event_t *ev) {
   ipc_channel_t           *chan = c->data;
   ipc_alert_link_t        *cur;
   
-  ngx_int_t                rc;
+  ngx_int_t                rc = NGX_OK;
   
-  uint8_t                  write_aborted = 0;
   while((cur = chan->wbuf.head) != NULL) {
-    rc = ipc_write_buffered_alert(fd, cur);
+    rc = ipc_write_packet(fd, &cur->buf);
     
-    if(rc == NGX_EAGAIN) {
-      write_aborted = 1;
-      break;
-    }
-    else if(rc == NGX_OK) {
+    if(rc == NGX_OK) {
       chan->wbuf.head = cur->next;
       if(chan->wbuf.tail == cur) {
         chan->wbuf.tail = NULL;
       }
-      ipc_free_buffered_alert(cur);
-    }
-    else {
-      //we got other problems
-      write_aborted = 1;
-      break;
+      free(cur);
     }
   }
   
-  if(write_aborted) {
-    //re-add event because the write failed
-    ngx_handle_write_event(c->write, 0);
+  if(rc == NGX_OK && chan->wbuf.last_pkt.data) {
+    rc = ipc_write_packet(fd, &chan->wbuf.last_pkt);
   }
-  else {
+  
+  if(rc == NGX_OK) {
     assert(chan->wbuf.head == NULL);
     assert(chan->wbuf.tail == NULL);
   }
+  else {
+    //re-add event because the write failed
+    if(chan->wbuf.last_pkt.data) {
+      ipc_enqueue_tmp_pkt(&chan->wbuf);
+    }
+    ngx_handle_write_event(c->write, 0);
+  }
+  chan->wbuf.last_pkt.data = NULL;
+  chan->wbuf.last_pkt.len = 0;
 }
 
 
 typedef enum {IPC_CONN_READ, IPC_CONN_WRITE} ipc_conn_type_t;
+
 static ngx_int_t ipc_channel_setup_conn(ipc_channel_t *chan, ngx_cycle_t *cycle, ipc_conn_type_t conn_type, void (*event_handler)(ngx_event_t *), void *data) {
   ngx_connection_t      *c; 
   //set up read connection
@@ -398,7 +425,6 @@ static ngx_int_t ipc_channel_setup_conn(ipc_channel_t *chan, ngx_cycle_t *cycle,
     c->write->handler = NULL;
     ngx_add_event(c->read, NGX_READ_EVENT, 0);
     chan->read_conn=c;
-    parsebuf_reset_readbuf(&chan->rbuf);
   }
   else if(conn_type == IPC_CONN_WRITE) {
     c->read->handler = NULL;
@@ -438,183 +464,163 @@ static ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   return NGX_OK;
 }
 
-static void alloc_buf(ipc_readbuf_t *rbuf, size_t size) {
-  rbuf->buf = malloc(size);
-  rbuf->buf_last = rbuf->buf + size;
-  rbuf->cur = rbuf->buf;
-  rbuf->last = rbuf->buf;
-}
-
-static void alloc_buf_copy(ipc_readbuf_t *rbuf, size_t size) {
-  char   *oldbuf = rbuf->buf, *cur = rbuf->cur;
-  size_t  oldsz =rbuf->last - cur;
-  assert(size > oldsz);
-  alloc_buf(rbuf, size);
-  if(oldsz > 0) {
-    memcpy(rbuf->cur, cur, oldsz);
+static void ipc_free_readbuf(ipc_channel_t *chan, ipc_readbuf_t *rbuf) {
+  if(rbuf->next) {
+    rbuf->next->prev = rbuf->prev;
   }
-  rbuf->last = rbuf->cur + oldsz;  
-  free(oldbuf);
+  if(rbuf->prev) {
+    rbuf->prev->next = rbuf->next;
+  }
+  if(chan->rbuf_head == rbuf) {
+    chan->rbuf_head = rbuf->next;
+  }
+  free(rbuf);
 }
 
-static ngx_int_t parsebuf_reset_readbuf(ipc_readbuf_t *rbuf) {
-  
-  ngx_memzero(&rbuf->header, sizeof(rbuf->header));
-  ngx_memzero(&rbuf->body, sizeof(rbuf->body));
-  
-  rbuf->complete = 0;
-  
-  if(rbuf->buf) {
-    if(rbuf->last == rbuf->cur) {
-      if(rbuf->buf_last - rbuf->buf > IPC_MAX_READBUF_LEN) {
-        DBG("parsebuf_reset %p: remove large old buf & rewind", rbuf);
-        free(rbuf->buf);
-        alloc_buf(rbuf, IPC_MAX_READBUF_LEN);
+static ipc_readbuf_t *ipc_get_readbuf(ipc_channel_t *chan, ipc_packet_header_t *header, char **err) {
+  ipc_readbuf_t  *cur;
+  for(cur = chan->rbuf_head; cur!= NULL; cur = cur->next) {
+    if(header->src_slot == cur->pkt.header.src_slot) {
+      if(header->src_pid != cur->pkt.header.src_pid) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "nchan IPC: got packets from different processes for the same slot: old %i, new %i. Clearing out old packet buffer.", cur->pkt.header.src_pid, header->src_pid);
+        ipc_free_readbuf(chan, cur);
+        break;
       }
-      else if(rbuf->buf_last - rbuf->buf < IPC_MAX_READBUF_LEN) {
-        DBG("parsebuf_reset %p: remove small old buf & rewind", rbuf);
-        free(rbuf->buf);
-        alloc_buf(rbuf, IPC_MAX_READBUF_LEN);
+      else if(header->ctrl != '+') {
+        ipc_free_readbuf(chan, cur);
+        *err = "unexpected packet ctrl (wanted '+')";
+        return NULL;
+      }
+      else if(header->tot_len != cur->pkt.header.tot_len) {
+        ipc_free_readbuf(chan, cur);
+        *err = "wrong packet length";
+        return NULL;
       }
       else {
-        DBG("parsebuf_reset %p: rewind buf", rbuf);
-        rbuf->cur = rbuf->buf;
-        rbuf->last = rbuf->buf;
+        return cur;
       }
-      rbuf->read_next_bytes = IPC_MAX_READBUF_LEN;
     }
-    else {
-      DBG("parsebuf_reset %p: there's more data to parse", rbuf);
-      assert(rbuf->last > rbuf->cur);
-      rbuf->read_next_bytes = rbuf->buf_last - rbuf->last;
-      return NGX_AGAIN;
-    }
-  }
-  else {
-    DBG("parsebuf_reset %p: intialize buf", rbuf);
-    rbuf->read_next_bytes = IPC_MAX_READBUF_LEN;
-    alloc_buf(rbuf, IPC_MAX_READBUF_LEN);
   }
   
-  return NGX_OK;
+  if(header->ctrl != '>') {
+    *err = "unexpected packet ctrl (wanted '>')";
+    return NULL;
+  }
+  
+  cur = malloc(sizeof(*cur) + header->tot_len);
+  if(!cur) {
+    *err = "out of memory";
+    return NULL;
+  }
+  
+  cur->pkt.header = *header;
+  cur->body_cur = cur->pkt.body;
+  cur->prev = NULL;
+  cur->next = chan->rbuf_head;
+  
+  if(chan->rbuf_head) {
+    chan->rbuf_head->prev = cur;
+    cur->next = chan->rbuf_head;
+  }
+  chan->rbuf_head = cur;
+  
+  return cur;
 }
 
-static ngx_int_t parsebuf_need_data(ipc_readbuf_t *rbuf) {
-  assert(rbuf->header.complete);
+static int ipc_clear_socket_readbuf(ngx_socket_t s) {
+  char  buf[PIPE_BUF];
+  int   total = 0;
+  int   n = sizeof(buf);
   
-  size_t sz = rbuf->last - rbuf->cur, freesz = rbuf->last - rbuf->buf_last;
+  do {
+    n = read(s, buf, sizeof(buf));
+    total += n;
+  } while(n > 0);
   
-  if(rbuf->body.len <= sz){
-    //we already have the alert data
-    rbuf->read_next_bytes = 0;
-    return NGX_AGAIN;
-  }
-  else if(rbuf->body.len <= sz + freesz) {
-    // maybe have some data, but not enough
-    rbuf->read_next_bytes = rbuf->body.len - sz;
-    return NGX_OK;
-  }
-  else {
-    alloc_buf_copy(rbuf, rbuf->body.len);
-    rbuf->read_next_bytes = rbuf->body.len - (rbuf->last - rbuf->cur);
-    return NGX_OK;
-  }
+  return total;
 }
 
 
-static ngx_int_t parsebuf(ipc_readbuf_t *rbuf, ipc_alert_handler_pt handler) {
-  char *cur = rbuf->cur;
-  char *last = rbuf->last;
-  size_t used;
-  
-  if(!rbuf->header.complete) {
-    cur = (char *)ngx_strlchr((u_char *)cur, (u_char *)last, '|');
-    if(!cur) {
-      //need more data
-      rbuf->read_next_bytes = rbuf->buf_last - rbuf->last;
-      assert(rbuf->buf_last - rbuf->last >= (ssize_t )rbuf->read_next_bytes);
-      if(rbuf->read_next_bytes == 0) { // no space to read data
-        alloc_buf_copy(rbuf, IPC_MAX_READBUF_LEN);
-        rbuf->read_next_bytes = rbuf->buf_last - rbuf->last;
-        assert(rbuf->read_next_bytes != 0);
-      }
-      return NGX_OK;
-    }
-    else if(cur) {
-      *cur='\0';
-      if(rbuf->header.separators_seen == 0){
-        rbuf->header.src_slot = atoi(rbuf->cur);
-      }
-      else if(rbuf->header.separators_seen == 1){
-        rbuf->body.len = atoi(rbuf->cur);
-      }
-      else if(rbuf->header.separators_seen == 2){
-        rbuf->header.name_len = atoi(rbuf->cur);
-        rbuf->header.complete = 1;
-      }
-      *cur='|'; //change it back for debugging
-      rbuf->header.separators_seen ++;
-      
-      used = (cur+1) - rbuf->cur;
-      rbuf->cur += used;
-      
-      return NGX_AGAIN;
-    }
-  }
-  else {
-    if((ssize_t )rbuf->body.len <= rbuf->last - rbuf->cur) {
-      ngx_str_t name, data;
-      
-      rbuf->body.data = (u_char *)cur;
-      
-      name.data = rbuf->body.data;
-      name.len = rbuf->header.name_len;
-      
-      data.data = name.data + name.len;
-      data.len = rbuf->body.len - name.len;
-      
-      handler(rbuf->header.src_slot, &name, &data);
-      rbuf->cur += rbuf->body.len;
-      return parsebuf_reset_readbuf(rbuf);
-    }
-    else {
-      return parsebuf_need_data(rbuf);
-    }
-  }
-  return NGX_OK;
-}
-
-static ngx_int_t ipc_read(ipc_channel_t *ipc_channel, ipc_readbuf_t *rbuf, ipc_alert_handler_pt handler, ngx_log_t *log) {
+static ngx_int_t ipc_read(ipc_t *ipc, ipc_channel_t *ipc_channel, ipc_alert_handler_pt handler, ngx_log_t *log) {
   ssize_t             n;
-  ngx_err_t           err;
-  ngx_int_t           rc;
   ngx_socket_t        s = ipc_channel->read_conn->fd;
+  ngx_str_t           name, data;
+  ipc_packet_buf_t    pkt;
+  int                 discarded;
+  char               *err;
+  ipc_readbuf_t      *rbuf;
   
-  DBG("IPC read at most %i bytes", rbuf->read_next_bytes);
-  
-  while(rbuf->read_next_bytes > 0) {
-    assert(rbuf->buf_last - rbuf->last >= (ssize_t )rbuf->read_next_bytes);
+  while(1) {
+    n = read(s, &pkt.header, IPC_PKT_HEADER_SIZE);
     
-    n = read(s, rbuf->last, rbuf->read_next_bytes);
-    DBG("...actually read %i", n);
-    if (n == -1) {
-      err = ngx_errno;
-      if (err == NGX_EAGAIN) {
-        return NGX_AGAIN;
-      }
-      
-      ngx_log_error(NGX_LOG_ERR, log, err, "nchan IPC: read() failed");
-      return NGX_ERROR;
-    } 
-    else if (n == 0) {
-      ngx_log_debug0(NGX_LOG_ERR, log, 0, "nchan IPC: read() returned zero");
+    if (n == -1 && ngx_errno == NGX_EAGAIN) {
+      return NGX_AGAIN;
+    }
+    else if(n == -1) {
+      ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "nchan IPC: read() failed");
       return NGX_ERROR;
     }
-    else {
-      rbuf->last += n;
-      do {
-        rc = parsebuf(&ipc_channel->rbuf, handler);
-      } while(rc == NGX_AGAIN);
+    else if(pkt.header.pkt_len > IPC_PKT_MAX_BODY_SIZE) {
+      discarded = ipc_clear_socket_readbuf(s);
+      ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got corrupt packet size %i. Discarded %i bytes of data.", pkt.header.pkt_len, discarded);
+      return NGX_ERROR;
+    }
+    else if(pkt.header.name_len > pkt.header.tot_len) {
+      discarded = ipc_clear_socket_readbuf(s);
+      ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got corrupt packet alert-name size %i. Discarded %i bytes of data.", pkt.header.name_len, discarded);
+      return NGX_ERROR;
+    }
+    
+    switch (pkt.header.ctrl) {
+      case '$':
+        if(pkt.header.tot_len != pkt.header.pkt_len) {
+          discarded = ipc_clear_socket_readbuf(s);
+          ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got inconsistent whole-packet size %i. Discarded %i bytes of data.", pkt.header.pkt_len, discarded);
+          return NGX_ERROR;
+        }
+        //assert(n == pkt.pkt_len);
+        n = read(s, pkt.body, pkt.header.pkt_len);
+        name.len = pkt.header.name_len;
+        name.data = pkt.body;
+        data.len = pkt.header.tot_len - name.len;
+        data.data = name.data + name.len;
+        //DBG("read %i byte pkt", n + IPC_PKT_HEADER_SIZE);
+        handler(pkt.header.src_pid, pkt.header.src_slot, &name, &data);
+        break;
+        
+      case '>':
+      case '+':
+        if(pkt.header.tot_len <= pkt.header.pkt_len) {
+          discarded = ipc_clear_socket_readbuf(s);
+          ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got unexpectedly small part-packet total size %i. Discarded %i bytes of data.", pkt.header.tot_len, discarded);
+          return NGX_ERROR;
+        }
+        
+        rbuf = ipc_get_readbuf(ipc_channel, &pkt.header, &err);
+        if(!rbuf) {
+          n = read(s, pkt.body, pkt.header.pkt_len);
+          ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: dropped weird packet: %s", err);
+          return NGX_ERROR;
+        }
+        
+        n = read(s, rbuf->body_cur, pkt.header.pkt_len);
+        assert(n == pkt.header.pkt_len);
+        //DBG("read %i byte pkt", n + IPC_PKT_HEADER_SIZE);
+        rbuf->body_cur += n;
+        if(rbuf->body_cur - rbuf->pkt.body == rbuf->pkt.header.tot_len) { //alert finished
+          name.len = rbuf->pkt.header.name_len;
+          name.data = rbuf->pkt.body;
+          data.len = rbuf->pkt.header.tot_len - name.len;
+          data.data = name.data + name.len;
+          handler(pkt.header.src_pid, pkt.header.src_slot, &name, &data);
+          ipc_free_readbuf(ipc_channel, rbuf);
+        }
+        break;
+        
+      default:
+        discarded = ipc_clear_socket_readbuf(s);
+        ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got unexpected packet ctrl code '%c'. Discarded %i bytes of data.", pkt.header.ctrl, discarded);
+        return NGX_ERROR;
     }
   }
   
@@ -635,7 +641,7 @@ static void ipc_worker_read_handler(ngx_event_t *ev) {
   ipc = c->data;
   ipc_channel = &ipc->worker_channel[ngx_process_slot];
   
-  rc = ipc_read(ipc_channel, &ipc_channel->rbuf, ipc->worker_alert_handler, ev->log);
+  rc = ipc_read(ipc, ipc_channel, ipc->worker_alert_handler, ev->log);
   if (rc == NGX_ERROR) {
     ERR("IPC_READ_SOCKET failed: bad connection. This should never have happened, yet here we are...");
     assert(0);
@@ -645,44 +651,73 @@ static void ipc_worker_read_handler(ngx_event_t *ev) {
     return;
   }
 }
-  
-// This is what an alert string looks like:
-// <SRC_SLOT(uint16)>|<NAME&DATA_LEN(uint32)>|<NAME_LEN(uint16)>|<NAME><DATA>
+
 static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str_t *data) {
-  ipc_alert_link_t   *alert;
-  ipc_writebuf_t     *wb = &chan->wbuf;
-  size_t              alert_str_size = 0;
-  u_char             *end;
+  ipc_packet_buf_t             pkt;
+  ipc_writebuf_t              *wb = &chan->wbuf;
+  int pad;
   
   if(!chan->active) {
     return NGX_ERROR;
   }
-
-  alert_str_size +=   IPC_MAX_HEADER_LEN + data->len + name->len;
-  if((alert = ngx_alloc(sizeof(*alert) + alert_str_size, ngx_cycle->log)) == NULL) {
-    // nomem
-    return NGX_ERROR;
+  
+  pkt.header.tot_len = data->len + name->len;
+  pkt.header.name_len = name->len;
+  pkt.header.src_slot = ngx_process_slot;
+  pkt.header.src_pid = ngx_pid;
+  
+  //zero the struct padding
+  pad = pkt.body - (&pkt.header.ctrl + 1);
+  if(pad > 0) {
+    ngx_memzero(&pkt.header.ctrl + 1, pad);
   }
-  alert->next = NULL;
-  alert->sent = 0;
   
-  alert->buf.data = (u_char *)&alert[1];
-  
-  end = ngx_snprintf(alert->buf.data, alert_str_size, "%i|%i|%i|%V%V", ngx_process_slot, data->len + name->len, name->len, name, data);
-  
-  alert->buf.len = end - alert->buf.data;
-  
-  if(wb->tail != NULL) {
-    wb->tail->next = alert;
+  if(pkt.header.tot_len <= IPC_PKT_MAX_BODY_SIZE) {
+    ngx_sprintf(pkt.body, "%V%V", name, data);
+    pkt.header.pkt_len = pkt.header.tot_len;
+    pkt.header.ctrl = '$';
+    ipc_enqueue_write_pkt(wb, &pkt);
   }
-  wb->tail = alert;
-  if(wb->head == NULL) {
-    wb->head = alert;
+  else {
+    size_t    name_left = name->len;
+    size_t    data_left = data->len;
+    u_char   *namecur = name->data;
+    u_char   *datacur = data->data;
+    
+    ssize_t step; 
+    u_char *cur;
+    int pktnum;
+    for(pktnum = 0; name_left + data_left > 0; pktnum++) {
+      if(name_left > 0) {
+        step = name_left > IPC_PKT_MAX_BODY_SIZE ? IPC_PKT_MAX_BODY_SIZE : name_left;
+        ngx_memcpy(pkt.body, namecur, step);
+        namecur += step;
+        name_left -= step;
+        pkt.header.pkt_len = step;
+        cur = pkt.body + step;
+        
+        step = data_left > (IPC_PKT_MAX_BODY_SIZE - step) ? (IPC_PKT_MAX_BODY_SIZE - step) : data_left;
+        ngx_memcpy(cur, datacur, step);
+        datacur += step;
+        data_left -= step;
+        pkt.header.pkt_len += step;
+      }
+      else {
+        step = data_left > IPC_PKT_MAX_BODY_SIZE ? IPC_PKT_MAX_BODY_SIZE : data_left;
+        ngx_memcpy(pkt.body, datacur, step);
+        datacur += step;
+        data_left -= step;
+        pkt.header.pkt_len = step;
+      }
+      pkt.header.ctrl = pktnum == 0 ? '>' : '+';
+      ipc_enqueue_write_pkt(wb, &pkt);
+      ipc_enqueue_tmp_pkt(wb);
+    }
+    //assert(name_left + data_left == 0);
   }
+  
+  
   ipc_write_handler(chan->write_conn->write);
-  
-  //ngx_handle_write_event(ipc->c[slot]->write, 0);
-  //ngx_add_event(ipc->c[slot]->write, NGX_WRITE_EVENT, NGX_CLEAR_EVENT);
 
   return NGX_OK;
 }
@@ -695,7 +730,7 @@ ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t 
   if(!data) data = &empty;
   
   if(slot == ngx_process_slot) {
-    ipc->worker_alert_handler(slot, name, data);
+    ipc->worker_alert_handler(ngx_pid, slot, name, data);
     return NGX_OK;
   }
   return ipc_alert_channel(&ipc->worker_channel[slot], name, data);
