@@ -206,7 +206,6 @@ if [[ $debugger == 1 ]]; then
   attach_debugger "$DEBUGGER_NAME" "$DEBUGGER_CMD"
   wait $debugger_pids
   kill $master_pid
-  rm -f $SRCDIR/nginx $SRCDIR/nginx-source 2>/dev/null
 elif [[ $debug_master == 1 ]]; then
   pushd $SRCDIR
   kdbg -a "$NGINX_OPT" "./nginx"
