@@ -1,16 +1,18 @@
 return function(ipc, run_timer_handler, add_hacktimer, pending_alerts_iterator)
   local timer_handler
+  local meh = function() end
   timer_handler = function(premature)
     
     for src_slot, src_pid, name, data in pending_alerts_iterator do
       
       ipc.sender = src_pid
-      
       local handler = ipc.handlers[name]
       if handler then
         run_timer_handler(handler, name, data, false)
       elseif ipc.default_handler then
         run_timer_handler(ipc.default_handler, name, data, true)
+      else
+        run_timer_handler(meh, name, data, true)
       end
     end
     
