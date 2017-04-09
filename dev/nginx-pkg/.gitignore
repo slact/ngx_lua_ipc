@@ -4,5 +4,6 @@ pkg
 *.pkg.tar*
 *no_pool.patch
 ngx_debug_pool/
+lua-nginx-module/
 nginx
 openresty
