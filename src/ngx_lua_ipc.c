@@ -36,6 +36,7 @@ static ipc_t                        *ipc = NULL;
 // lua for the ipc alert handlers will be run from this timer's context
 static ngx_event_t                  *hacktimer = NULL;
 static int                           running_hacked_timer_handler = 0;
+static int                           alert_available = 0;
 static lua_ipc_alert_t               last_alert;
 
 static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
@@ -64,11 +65,17 @@ static ngx_int_t ngx_lua_ipc_get_alert_args(lua_State *L, int stack_offset, ngx_
 }
 
 static int ngx_lua_ipc_hacktimer_get_last_alert(lua_State *L) {
-  lua_pushinteger(L, last_alert.sender_slot);
-  lua_pushinteger(L, last_alert.sender_pid);
-  lua_pushlstring (L, (const char *)last_alert.name->data, last_alert.name->len);
-  lua_pushlstring (L, (const char *)last_alert.data->data, last_alert.data->len);
-  return 4;
+  if(alert_available) {
+    lua_pushinteger(L, last_alert.sender_slot);
+    lua_pushinteger(L, last_alert.sender_pid);
+    lua_pushlstring (L, (const char *)last_alert.name->data, last_alert.name->len);
+    lua_pushlstring (L, (const char *)last_alert.data->data, last_alert.data->len);
+    return 4;
+  }
+  else {
+    lua_pushnil(L);
+    return 1;
+  }
 }
 
 static int ngx_lua_ipc_hacktimer_run_handler(lua_State *L) {
@@ -222,6 +229,7 @@ static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender_slo
   last_alert.data = data;
   
   //listener timer now!!
+  alert_available = 1;
   if(hacktimer && hacktimer->timer.key > ngx_current_msec) {
     DBG("run hacked timer right now: %p", hacktimer);
     
@@ -236,6 +244,7 @@ static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender_slo
   else {
     DBG("hacked timer %p already set to run on next cycle", hacktimer);
   }
+  alert_available = 0;
   return;
   
 }
