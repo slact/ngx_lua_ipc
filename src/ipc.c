@@ -559,8 +559,8 @@ static int ipc_clear_socket_readbuf(ngx_socket_t s) {
   int   n = sizeof(buf);
   
   do {
-    n = read(s, buf, sizeof(buf));
     total += n;
+    n = read(s, buf, sizeof(buf));
   } while(n > 0);
   
   return total;
