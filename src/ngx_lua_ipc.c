@@ -45,6 +45,17 @@ static lua_ipc_alert_t               last_alert;
 
 static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
 
+static int push_ipc_return_value(lua_State *L, int success) {
+  if(success) {
+    lua_pushboolean(L, 1);
+    return 1;
+  }
+  else {
+    lua_pushnil(L);
+    lua_pushstring (L, ipc_get_last_error(ipc));
+    return 2;
+  }
+}
 
 ngx_int_t luaL_checklstring_as_ngx_str(lua_State *L, int n, ngx_str_t *str) {
   size_t         data_sz;
@@ -204,8 +215,7 @@ static int ngx_lua_ipc_send_alert(lua_State *L) {
   
   rc = ipc_alert_pid(ipc, target_worker_pid, &name, &data);
   
-  lua_pushboolean(L, rc == NGX_OK);
-  return 1;
+  return push_ipc_return_value(L, rc == NGX_OK);
 }
 
 static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
@@ -215,8 +225,7 @@ static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
 
   rc = ipc_alert_all_workers(ipc, &name, &data);
   
-  lua_pushboolean(L, rc == NGX_OK);
-  return 1;
+  return push_ipc_return_value(L, rc == NGX_OK);
 }
 
 static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {

@@ -18,8 +18,10 @@
 #else
 #define DBG(fmt, args...)
 #endif
-#define ERR(ipc, fmt, args...) LOG(ipc, 0, NGX_LOG_ERR, fmt, ##args)
-#define ERR_CODE(ipc, code, fmt, args...) LOG(ipc, 0, NGX_LOG_ERR, fmt, ##args)
+#define ERR(ipc, fmt, args...) LOG(ipc, 0, NGX_LOG_ERR, fmt, ##args); \
+  ngx_snprintf((ipc)->last_error, IPC_MAX_ERROR_LEN, fmt "%Z", ##args)
+#define ERR_CODE(ipc, code, fmt, args...) LOG(ipc, 0, NGX_LOG_ERR, fmt, ##args); \
+  ngx_snprintf((ipc)->last_error, IPC_MAX_ERROR_LEN, fmt "%Z", ##args)
 
 #define NGX_MAX_HELPER_PROCESSES 0 // don't extend IPC to helpers. just workers for now.
 
@@ -705,11 +707,11 @@ static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str
   
   
   if(name->len > IPC_ALERT_NAME_MAX_LEN) {
-    ERR(chan->ipc, "alert name lenth cannot exceed %i, was %i", IPC_ALERT_NAME_MAX_LEN, name->len);
+    ERR(chan->ipc, "alert name length cannot exceed %i, was %i", IPC_ALERT_NAME_MAX_LEN, name->len);
     return NGX_ERROR;
   }
   if(data->len > IPC_ALERT_DATA_MAX_LEN) {
-    ERR(chan->ipc, "alert data lenth cannot exceed %i, was %i", IPC_ALERT_DATA_MAX_LEN, data->len);
+    ERR(chan->ipc, "alert data length cannot exceed %i, was %i", IPC_ALERT_DATA_MAX_LEN, data->len);
     return NGX_ERROR;
   }
   
@@ -804,6 +806,7 @@ ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t 
 ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t worker_pid, ngx_str_t *name, ngx_str_t *data) {
   ngx_int_t slot = ipc_get_slot(ipc, worker_pid);
   if(slot == NGX_ERROR) {
+    ngx_snprintf((ipc)->last_error, IPC_MAX_ERROR_LEN, "No worker process with PID %i%Z", worker_pid);
     return NGX_ERROR;
   }
   return ipc_alert_slot(ipc, slot, name, data);
@@ -813,12 +816,14 @@ ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data) {
   ipc_shm_data_t         *shdata = ipc->shm;
   int                     max_workers = ipc->worker_process_count;
   int                     i;
+  int                     rc, trc;
   process_slot_tracking_t *process_slots = shdata->process_slots;
   
   for(i=0; i<max_workers; i++) {
-    ipc_alert_slot(ipc, process_slots[i].slot, name, data);
+    trc = ipc_alert_slot(ipc, process_slots[i].slot, name, data);
+    if(trc != NGX_OK) rc = trc;
   }
-  return NGX_OK;
+  return rc;
 }
 
 ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count) {
@@ -835,3 +840,6 @@ ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count) {
   return pid_array;
 }
 
+char *ipc_get_last_error(ipc_t *ipc) {
+  return (char *)ipc->last_error;
+}

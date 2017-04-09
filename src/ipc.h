@@ -62,6 +62,8 @@ typedef struct {
 
 typedef void (*ipc_alert_handler_pt)(ngx_pid_t alert_sender_pid, ngx_int_t alert_sender_slot, ngx_str_t *alert_name, ngx_str_t *alert_data);
 
+
+#define IPC_MAX_ERROR_LEN 512
 struct ipc_s {
   const char            *name;
   void                  *shm;
@@ -69,7 +71,7 @@ struct ipc_s {
   ipc_channel_t          worker_channel[NGX_MAX_PROCESSES];
   ngx_int_t              worker_process_count;
   ipc_alert_handler_pt   worker_alert_handler;
-  
+  u_char                 last_error[IPC_MAX_ERROR_LEN];
 }; //ipc_t
 
 //IPC needs to be initialized in two steps init_module (prefork), and init_worker (post-fork)
@@ -86,6 +88,8 @@ ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid);
 ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data);
 ngx_int_t ipc_alert_pid(ipc_t *ipc, ngx_pid_t pid, ngx_str_t *name, ngx_str_t *data);
 ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count); //useful for debugging
+
+char *ipc_get_last_error(ipc_t *ipc);
 
 ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data); //poor man's broadcast
 
