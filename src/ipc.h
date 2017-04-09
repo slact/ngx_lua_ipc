@@ -1,14 +1,20 @@
 typedef struct ipc_alert_link_s ipc_alert_link_t;
+
+typedef struct {
+  struct iovec      iov[3];
+  int               n;
+} ipc_iovec_t;
+
 struct ipc_alert_link_s {
   ipc_alert_link_t *next;
-  ngx_str_t         buf;
+  ipc_iovec_t       iovec;
 };
 
 typedef struct ipc_writebuf_s ipc_writebuf_t;
 struct ipc_writebuf_s {
   ipc_alert_link_t         *head;
   ipc_alert_link_t         *tail;
-  ngx_str_t                 last_pkt;
+  ipc_iovec_t               last_iovec;
   uint32_t                  n;
 }; //ipc_writebuf_t
 

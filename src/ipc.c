@@ -52,8 +52,7 @@ static ngx_int_t ipc_init_channel(ipc_t *ipc, ipc_channel_t *chan) {
   chan->wbuf.head = NULL;
   chan->wbuf.tail = NULL;
   chan->wbuf.n = 0;
-  chan->wbuf.last_pkt.data = NULL;
-  chan->wbuf.last_pkt.len = 0;
+  chan->wbuf.last_iovec.n = 0;
   chan->rbuf_head = NULL;
   return NGX_OK;
 }
@@ -305,34 +304,48 @@ static ngx_int_t ipc_close_channel(ipc_channel_t *chan) {
   return NGX_OK;
 }
 
-static ngx_int_t ipc_write_packet(ngx_socket_t fd, ngx_str_t *pkt) {
+static inline int ipc_iovec_sz(struct iovec *iov, int n) {
+  int sz = 0;
+  while(n>0) {
+    sz += iov[--n].iov_len;
+  }
+  return sz;
+}
+
+static ngx_int_t ipc_write_iovec(ngx_socket_t fd, ipc_iovec_t *vec) {
   int          n;
-  size_t       maxlen = PIPE_BUF;
-  assert(pkt->len <= maxlen);
   
-  n = write(fd, pkt->data, pkt->len);
+  n = writev(fd, vec->iov, vec->n);
   if (n == -1 && (ngx_errno) == NGX_EAGAIN) {
     //ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() EAGAINED...");
     return NGX_AGAIN;
   }
-  else if(n != (int )pkt->len) {
+  else if(n != ipc_iovec_sz(vec->iov, vec->n)) {
     ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_errno, "write() failed with n=%i", n);
     assert(0);
     return NGX_ERROR;
   }
-  //DBG("wrote %i byte pkt %p", n, pkt->data);
+  //DBG("wrote %i byte pkt", n);
   return NGX_OK;
 }
 
-static ngx_int_t ipc_enqueue_tmp_pkt(ipc_writebuf_t *wb) {
-  size_t             sz;
+static ngx_int_t ipc_enqueue_tmp_iovec(ipc_writebuf_t *wb) {
+  size_t             sz=0, len;
   ipc_alert_link_t  *link;
   
-  if(!wb->last_pkt.data) {
+  ipc_iovec_t       *vec = &wb->last_iovec;
+  u_char            *cur;
+  
+  int                i;
+  
+  if(vec->n == 0) {
     return NGX_OK;
   }
   
-  sz = wb->last_pkt.len;
+  for(i=0; i < vec->n; i++) {
+    sz = vec->iov[i].iov_len;
+  }
+  
   link = malloc(sizeof(*link) + sz);
   
   if(!link) {
@@ -340,10 +353,19 @@ static ngx_int_t ipc_enqueue_tmp_pkt(ipc_writebuf_t *wb) {
     return NGX_ERROR;
   }
   
-  link->buf.len = sz;
-  link->buf.data = (u_char *)&link[1];
+  link->iovec.iov[0].iov_len = sz;
+  cur = (u_char *)&link[1];
+  link->iovec.iov[0].iov_base = cur;
+  link->iovec.n = 1;
   link->next = NULL;
-  ngx_memcpy(link->buf.data, wb->last_pkt.data, sz);
+  
+  for(i=0; i < vec->n; i++) {
+    len = vec->iov[i].iov_len;
+    if(len > 0) {
+      ngx_memcpy(cur, vec->iov[i].iov_base, len);
+      cur += len;
+    }
+  }
   
   if(!wb->head) {
     wb->head = link;
@@ -352,21 +374,14 @@ static ngx_int_t ipc_enqueue_tmp_pkt(ipc_writebuf_t *wb) {
     wb->tail->next = link;
   }
   wb->tail = link;
-  wb->last_pkt.data = NULL;
-  wb->last_pkt.len = 0;
+  
+  vec->n = 0;
   return NGX_OK;
 }
 
-static ngx_int_t ipc_enqueue_write_pkt(ipc_writebuf_t *wb, ipc_packet_buf_t *pkt) {
-  assert(sizeof(pkt->header) == (char *)pkt->body - (char *)pkt);
-  ngx_str_t   buf;
-  buf.data=(u_char *)pkt;
-  buf.len = IPC_PKT_HEADER_SIZE + pkt->header.pkt_len;
-  
-  ipc_enqueue_tmp_pkt(wb);
-  
-  wb->last_pkt = buf;
-  
+static ngx_int_t ipc_enqueue_write_iovec(ipc_writebuf_t *wb, ipc_iovec_t *v) {
+  ipc_enqueue_tmp_iovec(wb);
+  wb->last_iovec = *v;
   return NGX_OK;
 }
 
@@ -380,7 +395,7 @@ static void ipc_write_handler(ngx_event_t *ev) {
   ngx_int_t                rc = NGX_OK;
   
   while((cur = chan->wbuf.head) != NULL) {
-    rc = ipc_write_packet(fd, &cur->buf);
+    rc = ipc_write_iovec(fd, &cur->iovec);
     
     if(rc == NGX_OK) {
       chan->wbuf.head = cur->next;
@@ -391,8 +406,8 @@ static void ipc_write_handler(ngx_event_t *ev) {
     }
   }
   
-  if(rc == NGX_OK && chan->wbuf.last_pkt.data) {
-    rc = ipc_write_packet(fd, &chan->wbuf.last_pkt);
+  if(rc == NGX_OK && chan->wbuf.last_iovec.n > 0) {
+    rc = ipc_write_iovec(fd, &chan->wbuf.last_iovec);
   }
   
   if(rc == NGX_OK) {
@@ -401,13 +416,12 @@ static void ipc_write_handler(ngx_event_t *ev) {
   }
   else {
     //re-add event because the write failed
-    if(chan->wbuf.last_pkt.data) {
-      ipc_enqueue_tmp_pkt(&chan->wbuf);
+    if(chan->wbuf.last_iovec.n > 0) {
+      ipc_enqueue_tmp_iovec(&chan->wbuf);
     }
     ngx_handle_write_event(c->write, 0);
   }
-  chan->wbuf.last_pkt.data = NULL;
-  chan->wbuf.last_pkt.len = 0;
+  chan->wbuf.last_iovec.n = 0;
 }
 
 
@@ -653,71 +667,79 @@ static void ipc_worker_read_handler(ngx_event_t *ev) {
 }
 
 static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str_t *data) {
-  ipc_packet_buf_t             pkt;
+  ipc_packet_header_t          header;
   ipc_writebuf_t              *wb = &chan->wbuf;
-  int pad;
+  ipc_iovec_t                  vec;
+  
+  int                          pad;
   
   if(!chan->active) {
     return NGX_ERROR;
   }
   
-  pkt.header.tot_len = data->len + name->len;
-  pkt.header.name_len = name->len;
-  pkt.header.src_slot = ngx_process_slot;
-  pkt.header.src_pid = ngx_pid;
+  header.tot_len = data->len + name->len;
+  header.name_len = name->len;
+  header.src_slot = ngx_process_slot;
+  header.src_pid = ngx_pid;
+  
+  vec.n = 3;
   
   //zero the struct padding
-  pad = pkt.body - (&pkt.header.ctrl + 1);
+  pad = (u_char *)(&header + 1) - (&header.ctrl + 1);
   if(pad > 0) {
-    ngx_memzero(&pkt.header.ctrl + 1, pad);
+    ngx_memzero(&header.ctrl + 1, pad);
   }
   
-  if(pkt.header.tot_len <= IPC_PKT_MAX_BODY_SIZE) {
-    ngx_sprintf(pkt.body, "%V%V", name, data);
-    pkt.header.pkt_len = pkt.header.tot_len;
-    pkt.header.ctrl = '$';
-    ipc_enqueue_write_pkt(wb, &pkt);
+  vec.iov[0].iov_base = &header;
+  vec.iov[0].iov_len  = IPC_PKT_HEADER_SIZE;
+  
+  if(header.tot_len <= IPC_PKT_MAX_BODY_SIZE) {
+    header.pkt_len = header.tot_len;
+    header.ctrl = '$';
+    
+    vec.iov[1].iov_base = name->data;
+    vec.iov[1].iov_len  = name->len;
+    
+    vec.iov[2].iov_base = data->data;
+    vec.iov[2].iov_len  = data->len;
+    
+    ipc_enqueue_write_iovec(wb, &vec);
+    ipc_write_handler(chan->write_conn->write);
   }
   else {
     size_t    name_left = name->len;
     size_t    data_left = data->len;
-    u_char   *namecur = name->data;
-    u_char   *datacur = data->data;
-    
-    ssize_t step; 
-    u_char *cur;
     int pktnum;
+    
+    vec.iov[1].iov_base = name->data;
+    vec.iov[2].iov_base = data->data;
+    
     for(pktnum = 0; name_left + data_left > 0; pktnum++) {
-      if(name_left > 0) {
-        step = name_left > IPC_PKT_MAX_BODY_SIZE ? IPC_PKT_MAX_BODY_SIZE : name_left;
-        ngx_memcpy(pkt.body, namecur, step);
-        namecur += step;
-        name_left -= step;
-        pkt.header.pkt_len = step;
-        cur = pkt.body + step;
-        
-        step = data_left > (IPC_PKT_MAX_BODY_SIZE - step) ? (IPC_PKT_MAX_BODY_SIZE - step) : data_left;
-        ngx_memcpy(cur, datacur, step);
-        datacur += step;
-        data_left -= step;
-        pkt.header.pkt_len += step;
+      
+      header.ctrl = pktnum == 0 ? '>' : '+';
+      
+      if(name_left == 0) {
+        vec.iov[1].iov_len = 0;
       }
       else {
-        step = data_left > IPC_PKT_MAX_BODY_SIZE ? IPC_PKT_MAX_BODY_SIZE : data_left;
-        ngx_memcpy(pkt.body, datacur, step);
-        datacur += step;
-        data_left -= step;
-        pkt.header.pkt_len = step;
+        vec.iov[1].iov_len = name_left > IPC_PKT_MAX_BODY_SIZE ? IPC_PKT_MAX_BODY_SIZE : name_left;
+        name_left -= vec.iov[1].iov_len;
+        header.pkt_len = vec.iov[1].iov_len;
       }
-      pkt.header.ctrl = pktnum == 0 ? '>' : '+';
-      ipc_enqueue_write_pkt(wb, &pkt);
-      ipc_enqueue_tmp_pkt(wb);
+      
+      vec.iov[2].iov_len = data_left > (IPC_PKT_MAX_BODY_SIZE - vec.iov[1].iov_len) ? (IPC_PKT_MAX_BODY_SIZE - vec.iov[1].iov_len) : data_left;
+      data_left -= vec.iov[2].iov_len;
+      header.pkt_len += vec.iov[2].iov_len;
+      
+      ipc_enqueue_write_iovec(wb, &vec);
+      ipc_enqueue_tmp_iovec(wb);
+      
+      vec.iov[1].iov_base = (char *)vec.iov[1].iov_base + vec.iov[1].iov_len;
+      vec.iov[2].iov_base = (char *)vec.iov[2].iov_base + vec.iov[2].iov_len;
     }
+    ipc_write_handler(chan->write_conn->write);
     //assert(name_left + data_left == 0);
   }
-  
-  
-  ipc_write_handler(chan->write_conn->write);
 
   return NGX_OK;
 }
