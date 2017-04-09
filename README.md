@@ -17,14 +17,21 @@ Send alert to a worker process.
 ```lua
 ipc.send(destination_worker_pid, ipc_alert_name, data_string)
 ```
-Returns `true` if `destination_worker_pid` is a valid worker process id, `false` otherwise.
+
+Return:
+ - `true` on success
+ - `nil, error_msg` if `ipc_alert_name` length is > 254, `data_string` length is > 4G, `destination_worker_pid` is not a valid worker process.
+
 
 ### `ipc.broadcast`
 Broadcast alert to all workers (including sender).
 ```lua
 ipc.broadcast(alert_name, data_string)
 ```
-Always returns `true`.
+
+Return:
+ - `true` on success
+ - `nil, error_msg` if `ipc_alert_name` length is > 254 or `data_string` length is > 4G
 
 ### `ipc.receive`
 Register one or several alert handlers. 
@@ -36,7 +43,8 @@ ipc.receive(ipc_alert_name, function(data)
   --ipc receiver function for all alerts with string name ipc_alert_name
 end)
 ```
-Always returns `true`.
+Return:
+ - `true`
 
 Several alert names can be registered at once by passing a table:
 ```lua
@@ -65,7 +73,12 @@ Reply to worker that sent an alert. Works only when in an alert receiver handler
     ipc.reply("hello-response", "hi, you said "..data)
   end)
 ```
-Always returns `true`.
+
+Return:
+ - `true`
+ 
+Raises error if used outside of a `ipc.receive` handler.
+
 
 ### `ipc.sender`
 When receiving an alert, `ipc.sender` contains the sending worker"s process id.
@@ -105,7 +118,13 @@ http {
       set $data $2;
       content_by_lua_block {
         local ipc = require "ngx.ipc"
-        ipc.send(ngx.var.dst_pid, "hello", ngx.var.data)
+        local ok, err = ipc.send(ngx.var.dst_pid, "hello", ngx.var.data)
+        if ok then
+          ngx.say("Sent alert to pid " .. ngx.var.dst_pid);
+        else
+          ngx.status = 500
+          ngx.say(err)
+        end
       }
     }
     
