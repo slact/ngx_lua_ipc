@@ -404,6 +404,9 @@ static void ipc_write_handler(ngx_event_t *ev) {
       }
       free(cur);
     }
+    else {
+      break;
+    }
   }
   
   if(rc == NGX_OK && chan->wbuf.last_iovec.n > 0) {
