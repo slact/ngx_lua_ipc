@@ -7,12 +7,15 @@
 
 #include <assert.h>
 
-#define DEBUG_LEVEL NGX_LOG_DEBUG
-//#define DEBUG_LEVEL NGX_LOG_WARN
+//#define DEBUG_ON
 
 #define LOAD_SCRIPTS_AS_NAMED_CHUNKS
 
-#define DBG(fmt, args...) ngx_log_error(DEBUG_LEVEL, ngx_cycle->log, 0, "IPC:" fmt, ##args)
+#ifdef DEBUG_ON
+#define DBG(fmt, args...) ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0, "IPC:" fmt, ##args)
+#else
+#define DBG(fmt, args...) 
+#endif
 #define ERR(fmt, args...) ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "IPC:" fmt, ##args)
 
 #ifndef container_of
@@ -36,6 +39,7 @@ static ipc_t                        *ipc = NULL;
 // lua for the ipc alert handlers will be run from this timer's context
 static ngx_event_t                  *hacktimer = NULL;
 static int                           running_hacked_timer_handler = 0;
+
 static int                           alert_available = 0;
 static lua_ipc_alert_t               last_alert;
 

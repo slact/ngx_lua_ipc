@@ -10,11 +10,16 @@
 #include <sys/uio.h>
 #include <sys/mman.h>
 
-#define DEBUG_LEVEL NGX_LOG_DEBUG
-//#define DEBUG_LEVEL NGX_LOG_WARN
+//#define IPC_DEBUG_ON
 
-#define DBG(fmt, args...) ngx_log_error(DEBUG_LEVEL, ngx_cycle->log, 0, "IPC:" fmt, ##args)
-#define ERR(fmt, args...) ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "IPC:" fmt, ##args)
+#define LOG(ipc, code, lvl, fmt, args...) ngx_log_error(lvl, ngx_cycle->log, code, "IPC %s: " fmt, ((ipc) ? (ipc)->name : ""), ##args)
+#ifdef IPC_DEBUG_ON
+#define DBG(fmt, args...) LOG((ipc_t *)NULL, 0, NGX_LOG_WARN, fmt, ##args)
+#else
+#define DBG(fmt, args...)
+#endif
+#define ERR(ipc, fmt, args...) LOG(ipc, 0, NGX_LOG_ERR, fmt, ##args)
+#define ERR_CODE(ipc, code, fmt, args...) LOG(ipc, 0, NGX_LOG_ERR, fmt, ##args)
 
 #define NGX_MAX_HELPER_PROCESSES 0 // don't extend IPC to helpers. just workers for now.
 
@@ -312,24 +317,28 @@ static inline int ipc_iovec_sz(struct iovec *iov, int n) {
   return sz;
 }
 
-static ngx_int_t ipc_write_iovec(ngx_socket_t fd, ipc_iovec_t *vec) {
+static ngx_int_t ipc_write_iovec(ipc_t *ipc, ngx_socket_t fd, ipc_iovec_t *vec) {
   int          n;
-  
+  int expected_iovec_sz = ipc_iovec_sz(vec->iov, vec->n);
+  int expected_len = sizeof(ipc_packet_header_t) + ((ipc_packet_header_t *)vec->iov[0].iov_base)->pkt_len;
   n = writev(fd, vec->iov, vec->n);
   if (n == -1 && (ngx_errno) == NGX_EAGAIN) {
     //ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err, "write() EAGAINED...");
     return NGX_AGAIN;
   }
-  else if(n != ipc_iovec_sz(vec->iov, vec->n)) {
-    ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_errno, "write() failed with n=%i", n);
-    assert(0);
+  else if(n != expected_iovec_sz) {
+    ERR(ipc, "writev() failed with n=%i, expected %i", n, expected_iovec_sz);
+    return NGX_ERROR;
+  }
+  else if(n != expected_len) {
+    ERR(ipc, "writev() inconsistent, expected %i, got %i", expected_len, n);
     return NGX_ERROR;
   }
   //DBG("wrote %i byte pkt", n);
   return NGX_OK;
 }
 
-static ngx_int_t ipc_enqueue_tmp_iovec(ipc_writebuf_t *wb) {
+static ngx_int_t ipc_enqueue_tmp_iovec(ipc_t *ipc, ipc_writebuf_t *wb) {
   size_t             sz=0, len;
   ipc_alert_link_t  *link;
   
@@ -349,7 +358,7 @@ static ngx_int_t ipc_enqueue_tmp_iovec(ipc_writebuf_t *wb) {
   link = malloc(sizeof(*link) + sz);
   
   if(!link) {
-    ERR("OOM");
+    ERR(ipc, "out of memory while allocating buffered iovec for writing");
     return NGX_ERROR;
   }
   
@@ -379,8 +388,8 @@ static ngx_int_t ipc_enqueue_tmp_iovec(ipc_writebuf_t *wb) {
   return NGX_OK;
 }
 
-static ngx_int_t ipc_enqueue_write_iovec(ipc_writebuf_t *wb, ipc_iovec_t *v) {
-  ipc_enqueue_tmp_iovec(wb);
+static ngx_int_t ipc_enqueue_write_iovec(ipc_t *ipc, ipc_writebuf_t *wb, ipc_iovec_t *v) {
+  ipc_enqueue_tmp_iovec(ipc, wb);
   wb->last_iovec = *v;
   return NGX_OK;
 }
@@ -395,7 +404,7 @@ static void ipc_write_handler(ngx_event_t *ev) {
   ngx_int_t                rc = NGX_OK;
   
   while((cur = chan->wbuf.head) != NULL) {
-    rc = ipc_write_iovec(fd, &cur->iovec);
+    rc = ipc_write_iovec(chan->ipc, fd, &cur->iovec);
     
     if(rc == NGX_OK) {
       chan->wbuf.head = cur->next;
@@ -410,7 +419,7 @@ static void ipc_write_handler(ngx_event_t *ev) {
   }
   
   if(rc == NGX_OK && chan->wbuf.last_iovec.n > 0) {
-    rc = ipc_write_iovec(fd, &chan->wbuf.last_iovec);
+    rc = ipc_write_iovec(chan->ipc, fd, &chan->wbuf.last_iovec);
   }
   
   if(rc == NGX_OK) {
@@ -420,7 +429,7 @@ static void ipc_write_handler(ngx_event_t *ev) {
   else {
     //re-add event because the write failed
     if(chan->wbuf.last_iovec.n > 0) {
-      ipc_enqueue_tmp_iovec(&chan->wbuf);
+      ipc_enqueue_tmp_iovec(chan->ipc, &chan->wbuf);
     }
     ngx_handle_write_event(c->write, 0);
   }
@@ -494,12 +503,12 @@ static void ipc_free_readbuf(ipc_channel_t *chan, ipc_readbuf_t *rbuf) {
   free(rbuf);
 }
 
-static ipc_readbuf_t *ipc_get_readbuf(ipc_channel_t *chan, ipc_packet_header_t *header, char **err) {
+static ipc_readbuf_t *channel_get_readbuf(ipc_channel_t *chan, ipc_packet_header_t *header, char **err) {
   ipc_readbuf_t  *cur;
   for(cur = chan->rbuf_head; cur!= NULL; cur = cur->next) {
     if(header->src_slot == cur->pkt.header.src_slot) {
       if(header->src_pid != cur->pkt.header.src_pid) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "nchan IPC: got packets from different processes for the same slot: old %i, new %i. Clearing out old packet buffer.", cur->pkt.header.src_pid, header->src_pid);
+        ERR(chan->ipc, "got packets from different processes for the same slot: old %i, new %i. Clearing out old packet buffer.", cur->pkt.header.src_pid, header->src_pid);
         ipc_free_readbuf(chan, cur);
         break;
       }
@@ -574,29 +583,39 @@ static ngx_int_t ipc_read(ipc_t *ipc, ipc_channel_t *ipc_channel, ipc_alert_hand
       return NGX_AGAIN;
     }
     else if(n == -1) {
-      ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "nchan IPC: read() failed");
+      ERR_CODE(ipc, ngx_errno, "read() failed");
       return NGX_ERROR;
+    }
+    else if(n != IPC_PKT_HEADER_SIZE) {
+      discarded = ipc_clear_socket_readbuf(s);
+      ERR(ipc, "unexpected non-atomic read of packet header size %i, expected %i bytes. Discarded %i bytes of data.", n, IPC_PKT_HEADER_SIZE, pkt.header.pkt_len, discarded);
+      return NGX_AGAIN;
     }
     else if(pkt.header.pkt_len > IPC_PKT_MAX_BODY_SIZE) {
       discarded = ipc_clear_socket_readbuf(s);
-      ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got corrupt packet size %i. Discarded %i bytes of data.", pkt.header.pkt_len, discarded);
-      return NGX_ERROR;
+      ERR(ipc, "got corrupt packet size %i. Discarded %i bytes of data.", pkt.header.pkt_len, discarded);
+      return NGX_AGAIN;
     }
     else if(pkt.header.name_len > pkt.header.tot_len) {
       discarded = ipc_clear_socket_readbuf(s);
-      ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got corrupt packet alert-name size %i. Discarded %i bytes of data.", pkt.header.name_len, discarded);
-      return NGX_ERROR;
+      ERR(ipc, "got corrupt packet alert-name size %i. Discarded %i bytes of data.", pkt.header.name_len, discarded);
+      return NGX_AGAIN;
     }
     
     switch (pkt.header.ctrl) {
       case '$':
         if(pkt.header.tot_len != pkt.header.pkt_len) {
           discarded = ipc_clear_socket_readbuf(s);
-          ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got inconsistent whole-packet size %i. Discarded %i bytes of data.", pkt.header.pkt_len, discarded);
-          return NGX_ERROR;
+          ERR(ipc, "got inconsistent whole-packet size %i. Discarded %i bytes of data.", pkt.header.pkt_len, discarded);
+          return NGX_AGAIN;
         }
         //assert(n == pkt.pkt_len);
         n = read(s, pkt.body, pkt.header.pkt_len);
+        if(n != pkt.header.pkt_len) {
+          discarded = ipc_clear_socket_readbuf(s);
+          ERR(ipc, "unexpected non-atomic read of size %i, expected %i. Discarded %i bytes of data.", n, pkt.header.pkt_len, discarded);
+          return NGX_AGAIN;
+        }
         name.len = pkt.header.name_len;
         name.data = pkt.body;
         data.len = pkt.header.tot_len - name.len;
@@ -609,19 +628,23 @@ static ngx_int_t ipc_read(ipc_t *ipc, ipc_channel_t *ipc_channel, ipc_alert_hand
       case '+':
         if(pkt.header.tot_len <= pkt.header.pkt_len) {
           discarded = ipc_clear_socket_readbuf(s);
-          ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got unexpectedly small part-packet total size %i. Discarded %i bytes of data.", pkt.header.tot_len, discarded);
-          return NGX_ERROR;
+          ERR(ipc, "got unexpectedly small part-packet total size %i. Discarded %i bytes of data.", pkt.header.tot_len, discarded);
+          return NGX_AGAIN;
         }
         
-        rbuf = ipc_get_readbuf(ipc_channel, &pkt.header, &err);
+        rbuf = channel_get_readbuf(ipc_channel, &pkt.header, &err);
         if(!rbuf) {
           n = read(s, pkt.body, pkt.header.pkt_len);
-          ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: dropped weird packet: %s", err);
-          return NGX_ERROR;
+          ERR(ipc, "dropped weird packet: %s", err);
+          return NGX_AGAIN;
         }
         
         n = read(s, rbuf->body_cur, pkt.header.pkt_len);
-        assert(n == pkt.header.pkt_len);
+        if(n != pkt.header.pkt_len) {
+          discarded = ipc_clear_socket_readbuf(s);
+          ERR(ipc, "unexpected non-atomic read of size %i, expected %i. Discarded %i bytes of data.", n, pkt.header.pkt_len, discarded);
+          return NGX_AGAIN;
+        }
         //DBG("read %i byte pkt", n + IPC_PKT_HEADER_SIZE);
         rbuf->body_cur += n;
         if(rbuf->body_cur - rbuf->pkt.body == rbuf->pkt.header.tot_len) { //alert finished
@@ -636,8 +659,8 @@ static ngx_int_t ipc_read(ipc_t *ipc, ipc_channel_t *ipc_channel, ipc_alert_hand
         
       default:
         discarded = ipc_clear_socket_readbuf(s);
-        ngx_log_error(NGX_LOG_ERR, log, 0, "nchan IPC: got unexpected packet ctrl code '%c'. Discarded %i bytes of data.", pkt.header.ctrl, discarded);
-        return NGX_ERROR;
+        ERR(ipc, "got unexpected packet ctrl code '%c'. Discarded %i bytes of data.", pkt.header.ctrl, discarded);
+        return NGX_AGAIN;
     }
   }
   
@@ -660,7 +683,7 @@ static void ipc_worker_read_handler(ngx_event_t *ev) {
   
   rc = ipc_read(ipc, ipc_channel, ipc->worker_alert_handler, ev->log);
   if (rc == NGX_ERROR) {
-    ERR("IPC_READ_SOCKET failed: bad connection. This should never have happened, yet here we are...");
+    ERR(ipc, "IPC_READ_SOCKET failed: bad connection. This should never have happened, yet here we are...");
     assert(0);
     return;
   }
@@ -706,7 +729,7 @@ static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str
     vec.iov[2].iov_base = data->data;
     vec.iov[2].iov_len  = data->len;
     
-    ipc_enqueue_write_iovec(wb, &vec);
+    ipc_enqueue_write_iovec(chan->ipc, wb, &vec);
     ipc_write_handler(chan->write_conn->write);
   }
   else {
@@ -743,7 +766,7 @@ static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str
       vec.iov[2].iov_base = data_cur;
       vec.iov[2].iov_len  = data_len;
       
-      ipc_enqueue_write_iovec(wb, &vec);
+      ipc_enqueue_write_iovec(chan->ipc, wb, &vec);
       ipc_write_handler(chan->write_conn->write);
     }
     
@@ -754,7 +777,7 @@ static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str
 }
 
 ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t *data) {
-  DBG("IPC send alert '%V' to slot %i", name, slot);
+  DBG("send alert '%V' to slot %i", name, slot);
   
   ngx_str_t           empty = {0, NULL};
   if(!name) name = &empty;
