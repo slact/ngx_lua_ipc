@@ -15,23 +15,23 @@ local ipc = require "ngx.ipc"
 ### `ipc.send`
 Send alert to a worker process.
 ```lua
-ipc.send(destination_worker_pid, ipc_alert_name, data_string)
+ipc.send(destination_worker_pid, alert_name, alert_data)
 ```
 
-Return:
+Returns:
  - `true` on success
- - `nil, error_msg` if `ipc_alert_name` length is > 254, `data_string` length is > 4G, `destination_worker_pid` is not a valid worker process.
+ - `nil, error_msg` if `alert_name` length is > 254, `alert_data` length is > 4G, `destination_worker_pid` is not a valid worker process.
 
 
 ### `ipc.broadcast`
 Broadcast alert to all workers (including sender).
 ```lua
-ipc.broadcast(alert_name, data_string)
+ipc.broadcast(alert_name, alert_data)
 ```
 
-Return:
+Returns:
  - `true` on success
- - `nil, error_msg` if `ipc_alert_name` length is > 254 or `data_string` length is > 4G
+ - `nil, error_msg` if `alert_name` length is > 254 or `alert_data` length is > 4G
 
 ### `ipc.receive`
 Register one or several alert handlers. 
@@ -39,11 +39,11 @@ Note that `receive` cannot be used in the `init_by_lua*` context. During startup
 
 Register an alert handler:
 ```lua
-ipc.receive(ipc_alert_name, function(data)
-  --ipc receiver function for all alerts with string name ipc_alert_name
+ipc.receive(alert_name, function(data)
+  --ipc receiver function for all alerts with string name alert_name
 end)
 ```
-Return:
+Returns:
  - `true`
 
 Several alert names can be registered at once by passing a table:
@@ -74,7 +74,7 @@ Reply to worker that sent an alert. Works only when in an alert receiver handler
   end)
 ```
 
-Return:
+Returns:
  - `true`
  
 Raises error if used outside of a `ipc.receive` handler.
