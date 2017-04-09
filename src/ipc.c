@@ -709,35 +709,41 @@ static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str
   else {
     size_t    name_left = name->len;
     size_t    data_left = data->len;
-    int pktnum;
+    u_char   *name_cur = name->data;
+    u_char   *data_cur = data->data;
+    size_t    name_len = 0;
+    size_t    data_len = 0;
     
-    vec.iov[1].iov_base = name->data;
-    vec.iov[2].iov_base = data->data;
+    int pktnum;
     
     for(pktnum = 0; name_left + data_left > 0; pktnum++) {
       
       header.ctrl = pktnum == 0 ? '>' : '+';
       
       if(name_left == 0) {
-        vec.iov[1].iov_len = 0;
+        name_len = 0;
       }
       else {
-        vec.iov[1].iov_len = name_left > IPC_PKT_MAX_BODY_SIZE ? IPC_PKT_MAX_BODY_SIZE : name_left;
-        name_left -= vec.iov[1].iov_len;
-        header.pkt_len = vec.iov[1].iov_len;
+        name_cur += name_len;
+        name_len = name_left > IPC_PKT_MAX_BODY_SIZE ? IPC_PKT_MAX_BODY_SIZE : name_left;
+        name_left -= name_len;
       }
       
-      vec.iov[2].iov_len = data_left > (IPC_PKT_MAX_BODY_SIZE - vec.iov[1].iov_len) ? (IPC_PKT_MAX_BODY_SIZE - vec.iov[1].iov_len) : data_left;
-      data_left -= vec.iov[2].iov_len;
-      header.pkt_len += vec.iov[2].iov_len;
+      data_cur += data_len;
+      data_len = data_left > (IPC_PKT_MAX_BODY_SIZE - name_len) ? (IPC_PKT_MAX_BODY_SIZE - name_len) : data_left;
+      data_left -= data_len;
+      
+      header.pkt_len = name_len + data_len;
+      
+      vec.iov[1].iov_base = name_cur;
+      vec.iov[1].iov_len  = name_len;
+      vec.iov[2].iov_base = data_cur;
+      vec.iov[2].iov_len  = data_len;
       
       ipc_enqueue_write_iovec(wb, &vec);
-      ipc_enqueue_tmp_iovec(wb);
-      
-      vec.iov[1].iov_base = (char *)vec.iov[1].iov_base + vec.iov[1].iov_len;
-      vec.iov[2].iov_base = (char *)vec.iov[2].iov_base + vec.iov[2].iov_len;
+      ipc_write_handler(chan->write_conn->write);
     }
-    ipc_write_handler(chan->write_conn->write);
+    
     //assert(name_left + data_left == 0);
   }
 
