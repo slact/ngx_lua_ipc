@@ -143,7 +143,7 @@ http {
 
 # How it works
 
-IPC alerts are split into 4K packets and delivered to workers via Unix pipes. On the receiving end, a persistent timer started with `ntx.timer.at` hangs around waiting to be manually triggered by the reading IPC event handler. A simple hack in concept, but a bit convoluted in implementation.
+IPC alerts are split into 4K packets and delivered to workers via Unix pipes. On the receiving end, a persistent timer started with `ngx.timer.at` hangs around waiting to be manually triggered by the reading IPC event handler, and thes is re-added to wait for the next alert. A simple hack in concept, but a bit convoluted in implementation.
 
 # Speed
 
@@ -152,4 +152,7 @@ It's pretty fast. On an i5-2500K (2 core, 4 thread) running Nginx with the Lua m
  - 5 workers, 10Kb alerts: 110K alerts/sec
  - 20 workers, 10b alerts: 220K alerts/sec
  - 20 workers, 10Kb alerts: 33K alerts/sec
+
+
+
 
