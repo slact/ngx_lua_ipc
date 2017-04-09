@@ -649,7 +649,7 @@ static ngx_int_t ipc_read(ipc_t *ipc, ipc_channel_t *ipc_channel, ipc_alert_hand
         }
         //DBG("read %i byte pkt", n + IPC_PKT_HEADER_SIZE);
         rbuf->body_cur += n;
-        if(rbuf->body_cur - rbuf->pkt.body == rbuf->pkt.header.tot_len) { //alert finished
+        if((size_t )(rbuf->body_cur - rbuf->pkt.body) == rbuf->pkt.header.tot_len) { //alert finished
           name.len = rbuf->pkt.header.name_len;
           name.data = rbuf->pkt.body;
           data.len = rbuf->pkt.header.tot_len - name.len;
@@ -816,7 +816,7 @@ ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data) {
   ipc_shm_data_t         *shdata = ipc->shm;
   int                     max_workers = ipc->worker_process_count;
   int                     i;
-  int                     rc, trc;
+  int                     rc = NGX_OK, trc;
   process_slot_tracking_t *process_slots = shdata->process_slots;
   
   for(i=0; i<max_workers; i++) {
