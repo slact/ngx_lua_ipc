@@ -343,7 +343,7 @@ static ngx_int_t ipc_enqueue_tmp_iovec(ipc_writebuf_t *wb) {
   }
   
   for(i=0; i < vec->n; i++) {
-    sz = vec->iov[i].iov_len;
+    sz += vec->iov[i].iov_len;
   }
   
   link = malloc(sizeof(*link) + sz);
