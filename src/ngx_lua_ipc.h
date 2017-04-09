@@ -6,16 +6,6 @@
 
 extern ngx_module_t ngx_lua_ipc_module;
 
-typedef struct {
-  ngx_int_t      pid;
-  ngx_int_t      slot;
-} worker_slot_t;
-
-typedef struct {
-  worker_slot_t   *worker_slots;
-  void            *ptr;
-} shm_data_t;
-
 typedef struct ipc_alert_waiting_s ipc_alert_waiting_t;
 struct ipc_alert_waiting_s {
   ngx_int_t             sender_slot;
