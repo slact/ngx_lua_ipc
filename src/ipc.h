@@ -21,10 +21,10 @@ struct ipc_writebuf_s {
 
 typedef struct {
   ngx_pid_t  src_pid;
-  uint32_t   pkt_len;
   uint32_t   tot_len;
-  uint16_t   name_len;
   uint16_t   src_slot;
+  uint16_t   pkt_len;  //<=4K (or PIPE_BUF)
+  uint8_t    name_len;
   u_char     ctrl; // '$': whole, '>': part start, '+': part piece
 } ipc_packet_header_t;
 
