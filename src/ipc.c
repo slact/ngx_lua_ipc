@@ -703,6 +703,16 @@ static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str
     return NGX_ERROR;
   }
   
+  
+  if(name->len > IPC_ALERT_NAME_MAX_LEN) {
+    ERR(chan->ipc, "alert name lenth cannot exceed %i, was %i", IPC_ALERT_NAME_MAX_LEN, name->len);
+    return NGX_ERROR;
+  }
+  if(data->len > IPC_ALERT_DATA_MAX_LEN) {
+    ERR(chan->ipc, "alert data lenth cannot exceed %i, was %i", IPC_ALERT_DATA_MAX_LEN, data->len);
+    return NGX_ERROR;
+  }
+  
   header.tot_len = data->len + name->len;
   header.name_len = name->len;
   header.src_slot = ngx_process_slot;

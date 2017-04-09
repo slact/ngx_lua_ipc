@@ -27,6 +27,8 @@ typedef struct {
   uint8_t    name_len;
   u_char     ctrl; // '$': whole, '>': part start, '+': part piece
 } ipc_packet_header_t;
+#define IPC_ALERT_NAME_MAX_LEN (UINT8_MAX - 1)
+#define IPC_ALERT_DATA_MAX_LEN (UINT32_MAX - IPC_ALERT_NAME_MAX_LEN - 1)
 
 #define IPC_PKT_HEADER_SIZE    (sizeof(ipc_packet_header_t))
 #define IPC_PKT_MAX_BODY_SIZE  (PIPE_BUF - IPC_PKT_HEADER_SIZE)
