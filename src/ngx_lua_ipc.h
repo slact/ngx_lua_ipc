@@ -6,18 +6,11 @@
 
 extern ngx_module_t ngx_lua_ipc_module;
 
-typedef struct ipc_alert_waiting_s ipc_alert_waiting_t;
-struct ipc_alert_waiting_s {
-  ngx_int_t             sender_slot;
-  ngx_pid_t             sender_pid;
-  ngx_str_t             name;
-  ngx_str_t             data;
-  ipc_alert_waiting_t  *next;
-}; //ipc_alert_waiting_t
-
 typedef struct {
-  ipc_alert_waiting_t  *head;
-  ipc_alert_waiting_t  *tail;
-} received_buffered_alerts_t;
+  ngx_pid_t     sender_pid;
+  ngx_int_t     sender_slot;
+  ngx_str_t    *name;
+  ngx_str_t    *data;
+} lua_ipc_alert_t;
 
 #endif //NGX_LUA_IPC_H

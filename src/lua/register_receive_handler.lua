@@ -1,10 +1,11 @@
-return function(ipc, run_timer_handler, add_hacktimer, pending_alerts_iterator)
+return function(ipc, run_timer_handler, add_hacktimer, get_last_alert_data)
   local timer_handler
   local meh = function() end
   timer_handler = function(premature)
     
-    for src_slot, src_pid, name, data in pending_alerts_iterator do
-      
+    local src_slot, src_pid, name, data = get_last_alert_data()
+    
+    if src_slot ~= nil then
       ipc.sender = src_pid
       local handler = ipc.handlers[name]
       if handler then

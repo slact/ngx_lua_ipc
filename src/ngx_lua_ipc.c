@@ -36,10 +36,7 @@ static ipc_t                        *ipc = NULL;
 // lua for the ipc alert handlers will be run from this timer's context
 static ngx_event_t                  *hacktimer = NULL;
 static int                           running_hacked_timer_handler = 0;
-
-//received but yet-unprocessed alerts are quered here
-static received_buffered_alerts_t   received_alerts = {NULL, NULL};
-
+static lua_ipc_alert_t               last_alert;
 
 static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender, ngx_str_t *name, ngx_str_t *data);
 
@@ -66,28 +63,11 @@ static ngx_int_t ngx_lua_ipc_get_alert_args(lua_State *L, int stack_offset, ngx_
   return NGX_OK;
 }
 
-static int ngx_lua_ipc_hacktimer_alert_iterator(lua_State *L) {
-  ipc_alert_waiting_t  *cur = received_alerts.head;
-  if(cur) {
-    received_alerts.head = cur->next;
-    if(received_alerts.tail == cur) {
-      assert(cur->next == NULL);
-      received_alerts.tail = NULL;
-    }
-    
-    lua_pushinteger(L, cur->sender_slot);
-    lua_pushinteger(L, cur->sender_pid);
-    lua_pushlstring (L, (const char *)cur->name.data, cur->name.len);
-    lua_pushlstring (L, (const char *)cur->data.data, cur->data.len);
-    
-    ngx_free(cur);
-  }
-  else {
-    lua_pushnil(L);
-    lua_pushnil(L);
-    lua_pushnil(L);
-    lua_pushnil(L);
-  }
+static int ngx_lua_ipc_hacktimer_get_last_alert(lua_State *L) {
+  lua_pushinteger(L, last_alert.sender_slot);
+  lua_pushinteger(L, last_alert.sender_pid);
+  lua_pushlstring (L, (const char *)last_alert.name->data, last_alert.name->len);
+  lua_pushlstring (L, (const char *)last_alert.data->data, last_alert.data->len);
   return 4;
 }
 
@@ -230,36 +210,16 @@ static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
 
 static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
   
-  ipc_alert_waiting_t *alert;
-  
   if(!hacktimer && !running_hacked_timer_handler) {
     //no alert handlers here
     return;
   }
   
-  alert = ngx_alloc(sizeof(*alert) + name->len + data->len, ngx_cycle->log);
-  assert(alert);
+  last_alert.sender_slot = sender_slot;
+  last_alert.sender_pid = sender_pid;
   
-  alert->sender_slot = sender_slot;
-  alert->sender_pid = sender_pid;
-  
-  alert->name.data = (u_char *)&alert[1];
-  alert->name.len = name->len;
-  ngx_memcpy(alert->name.data, name->data, name->len);
-  
-  alert->data.data = alert->name.data + alert->name.len;
-  alert->data.len = data->len;
-  ngx_memcpy(alert->data.data, data->data, data->len);
-  
-  alert->next = NULL;
-  
-  if(received_alerts.tail) {
-    received_alerts.tail->next = alert;
-  }
-  received_alerts.tail = alert;
-  if(!received_alerts.head) {
-    received_alerts.head = alert;
-  }
+  last_alert.name = name;
+  last_alert.data = data;
   
   //listener timer now!!
   if(hacktimer && hacktimer->timer.key > ngx_current_msec) {
@@ -317,7 +277,7 @@ static int ngx_lua_ipc_init_lua_code(lua_State * L) {
   lua_pushvalue(L, t); //ipc table
   lua_pushcfunction(L, ngx_lua_ipc_hacktimer_run_handler);
   lua_pushcfunction(L, ngx_lua_ipc_hacktimer_add_and_hack);
-  lua_pushcfunction(L, ngx_lua_ipc_hacktimer_alert_iterator);
+  lua_pushcfunction(L, ngx_lua_ipc_hacktimer_get_last_alert);
   lua_call(L, 4, 1);
   
   lua_setfield(L, t, "receive");

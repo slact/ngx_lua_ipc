@@ -10,13 +10,14 @@ typedef struct {
 
 ngx_ipc_lua_scripts_t ngx_ipc_lua_scripts = {
   //register_receive_handler
-  "return function(ipc, run_timer_handler, add_hacktimer, pending_alerts_iterator)\n"
+  "return function(ipc, run_timer_handler, add_hacktimer, get_last_alert_data)\n"
   "  local timer_handler\n"
   "  local meh = function() end\n"
   "  timer_handler = function(premature)\n"
   "    \n"
-  "    for src_slot, src_pid, name, data in pending_alerts_iterator do\n"
-  "      \n"
+  "    local src_slot, src_pid, name, data = get_last_alert_data()\n"
+  "    \n"
+  "    if src_slot ~= nil then\n"
   "      ipc.sender = src_pid\n"
   "      local handler = ipc.handlers[name]\n"
   "      if handler then\n"
