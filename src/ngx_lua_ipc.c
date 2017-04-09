@@ -118,7 +118,7 @@ static int ngx_lua_ipc_hacktimer_run_handler(lua_State *L) {
   return 0;
 }
 
-ngx_event_t *ngx_lua_ipc_get_hacktimer(ngx_msec_t magic_key) {
+static ngx_event_t *ngx_lua_ipc_get_hacktimer(ngx_msec_t magic_key) {
   
   ngx_event_t    *ev;
   ngx_rbtree_node_t **p, *sentinel=ngx_event_timer_rbtree.sentinel, *temp=ngx_event_timer_rbtree.root;
