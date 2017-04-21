@@ -5,10 +5,15 @@ _nginx_ver_nopool=1.11.2
 _nginx_ver_legacy=1.8.1
 _nginx_ver_old=1.6.3
 _nginx_ver_very_old=0.8.55
+_ngx_echo_module_ver=0.60
 _lua_nginx_module_ver="master"
 _lua_upstream_nginx_module_ver="0.06"
-
 _openresty_ver=1.11.2.2
+
+_target_module_name=ngx_lua_ipc
+
+pkgname=nginx-${_target_module_name}-dev
+
 if [[ -n $OPENRESTY_CUSTOM_VERSION ]]; then
   _openresty_ver=$OPENRESTY_CUSTOM_VERSION
 fi
@@ -87,26 +92,25 @@ _pid_path="/run"
 _lock_path="/var/lock"
 _access_log="/dev/stdout"
 _error_log="errors.log"
-_ipc_dir="${startdir}/ngx_lua_ipc"
+_target_module_dir="${startdir}/${_target_module_name}"
 
 _pkgver() {
-  pushd "$_ipc_dir" >/dev/null
+  pushd "$_target_module_dir" >/dev/null
   printf "%s.%s.%s.%s" "$_nginx_ver" "$(git rev-parse --abbrev-ref HEAD | sed -r 's/-/_/g')" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
   popd >/dev/null
 }
 
-pkgname=nginx-lua-ipc-dev
 pkgver=0
 pkgrel=1
 pkgdesc="Nginx + ngx_lua_ipc"
-arch=('i686' 'x86_64' 'armv7h')
+arch=('any')
 install=install
 
 
 depends=('pcre' 'zlib' 'openssl')
 url="http://nginx.org"
 license=('custom')
-conflicts=('nginx' 'nginx-unstable' 'nginx-svn' 'nginx-devel' 'nginx-custom-dev' 'nginx-custom-slact') 
+conflicts=('nginx' 'nginx-mainline' 'nginx-devel') 
 provides=('nginx' 'nginx-custom')
 
 if [[ -n $USE_OPENRESTY ]]; then
@@ -186,24 +190,30 @@ source=("$_source"
   "nginx.logrotate"
   "nginx.service"
   "git+${_ngx_debug_pool_url}"
-  "$_no_pool_patch_source"
   "bl.txt"
-  $_lua_nginx_module_url
-  $_lua_upstream_nginx_module_url)
+)
 
 md5sums=('SKIP'
          '1fe7a3ca0773ce13f9f92e239a99f8b9'
          'ab1eb640c978536c1dad16674d6b3c3c'
          '62d494d23aef31d0b867161f9fffa6eb'
          'SKIP'
-         'SKIP'
-         'SKIP'
-         'SKIP'
 	 'SKIP')
 
 if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
   source+=( "$_lua_stream_module_src" )
   md5sums+=( 'SKIP')
+fi
+
+if [[ $WITH_NGX_ECHO_MODULE == 1 ]]; then
+  source+=(  "$_ngx_echo_module" )
+  md5sums+=( 'SKIP' )
+fi
+
+if [[ -n $WITH_LUA_MODULE ]]; then
+  source+=( "$_lua_nginx_module_url" "$_lua_upstream_nginx_module_url" )
+  md5sums+=( 'SKIP' 'SKIP' )
+  
 fi
 
 if [[ $NO_POOL == 1 ]] && [[ -z $USE_OPENRESTY ]]; then
@@ -215,8 +225,8 @@ fi
 
 build() {
   local _src_dir="${srcdir}/${_extracted_dir}"
-  #ln -sfT "$_src_dir" "$srcdir/nginx"
-  ln -sfT "$_ipc_dir" "$srcdir/ngx_lua_ipc"
+  #ln -sfT "$srcdir" "$srcdir/nginx"
+  ln -sfT "$startdir/../../" "$srcdir/${_target_module_name}"
   local _build_dir="${_src_dir}/objs"
   cd "$srcdir/${_extracted_dir}"
   
@@ -278,15 +288,6 @@ build() {
     CONFIGURE+=( --with-http_ssl_module )
   fi
     
-  if [[ -z $USE_OPENRESTY ]]; then
-    if [[ $_lua_nginx_module_ver == "master" ]]; then
-      CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module")
-    else
-      CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}")
-    fi
-    CONFIGURE+=("--add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}")
-  fi
-
   if [[ -n $WITH_STREAM_MODULE ]]; then
     CONFIGURE+=( --with-stream )
   fi
@@ -298,11 +299,20 @@ build() {
   if [[ -n $WITH_LUA_STREAM_MODULE ]]; then
     CONFIGURE+=( --add-module=../stream-lua-nginx-module-${_lua_stream_module_ver} )
   fi
-  
-  if [[ $DYNAMIC == 1 ]]; then
-    CONFIGURE+=( --add-dynamic-module=../ngx_lua_ipc )
+
+  if [[ -n $WITH_LUA_MODULE ]]; then
+  if [[ $_lua_nginx_module_ver == "master" ]]; then
+    CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module")
   else
-    CONFIGURE+=( --add-module=../ngx_lua_ipc )
+    CONFIGURE+=( "--add-module=${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}")
+  fi
+    CONFIGURE+=("--add-module=${srcdir}/lua-upstream-nginx-module-${_lua_upstream_nginx_module_ver}")
+  fi
+
+  if [[ $DYNAMIC == 1 ]]; then
+    CONFIGURE+=( --add-dynamic-module=../${_target_module_name} )
+  else
+    CONFIGURE+=( --add-module=../${_target_module_name} )
   fi
 
   if [[ $CONFIGURE_WITH_DEBUG == 1 ]]; then
@@ -323,6 +333,10 @@ build() {
     
   if [[ $NGX_DEBUG_POOL == 1 ]]; then
     CONFIGURE+=( "--add-module=../ngx_debug_pool" )
+  fi
+
+  if [[ $WITH_NGX_ECHO_MODULE == 1 ]]; then
+    CONFIGURE+=( "--add-module=../echo-nginx-module-${_ngx_echo_module_ver}")
   fi
   
   if [[ -z $NGINX_VERYOLDVERSION ]]; then
@@ -368,7 +382,7 @@ build() {
     fi
     
     
-    ln -sf ${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}/src ../ngx_lua_ipc/src/lua-nginx-module-source > /dev/null
+    #ln -sf ${srcdir}/lua-nginx-module-${_lua_nginx_module_ver}/src ../ngx_lua_ipc/src/lua-nginx-module-source > /dev/null
     
     make
   fi
