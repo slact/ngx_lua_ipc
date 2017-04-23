@@ -2,6 +2,8 @@
 MY_PATH="`dirname \"$0\"`"
 MY_PATH="`( cd \"$MY_PATH\" && pwd )`"
 pkg_path=$MY_PATH/nginx-pkg
+_src_dir=${MY_PATH}/../src
+  
 
 _clang="ccache clang -Qunused-arguments -fcolor-diagnostics"
 
@@ -217,9 +219,7 @@ if [[ -z $NO_MAKE ]]; then
   #  echo "failed generating documentation"; 
   #  exit 1
   #fi
-  
-  _src_dir=${MY_PATH}/../src
-  
+
   bundle exec hsss --format split \
     --no-hashes --no-name --no-each --no-count --no-static \
     --struct ngx_ipc_lua_scripts_t \
@@ -234,7 +234,7 @@ if [[ -z $NO_MAKE ]]; then
   _build_nginx
   ln -sf "${pkg_path}"/pkg/*/usr/bin/nginx "${MY_PATH}/nginx" > /dev/null
   ln -sf "${MY_PATH}/nginx" "${_src_dir}/nginx" > /dev/null
-  ln -sf"${_src_dir}/nginx-source/" "${pkg_path}/src/nginx/src"  > /dev/null
+  ln -sf "${_src_dir}/nginx-source/" "${pkg_path}/src/nginx/src"  > /dev/null
   
   popd >/dev/null
 fi
