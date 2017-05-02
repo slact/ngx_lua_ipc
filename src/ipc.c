@@ -552,9 +552,9 @@ static void ipc_free_readbuf(ipc_channel_t *chan, ipc_readbuf_t *rbuf) {
 static ipc_readbuf_t *channel_get_readbuf(ipc_channel_t *chan, ipc_packet_header_t *header, char **err) {
   ipc_readbuf_t  *cur;
   for(cur = chan->rbuf_head; cur!= NULL; cur = cur->next) {
-    if(header->src_slot == cur->pkt.header.src_slot) {
-      if(header->src_pid != cur->pkt.header.src_pid) {
-        ERR(chan->ipc, "got packets from different processes for the same slot: old %i, new %i. Clearing out old packet buffer.", cur->pkt.header.src_pid, header->src_pid);
+    if(header->src_slot == cur->header.src_slot) {
+      if(header->src_pid != cur->header.src_pid) {
+        ERR(chan->ipc, "got packets from different processes for the same slot: old %i, new %i. Clearing out old packet buffer.", cur->header.src_pid, header->src_pid);
         ipc_free_readbuf(chan, cur);
         break;
       }
@@ -563,7 +563,7 @@ static ipc_readbuf_t *channel_get_readbuf(ipc_channel_t *chan, ipc_packet_header
         *err = "unexpected packet ctrl (wanted '+')";
         return NULL;
       }
-      else if(header->tot_len != cur->pkt.header.tot_len) {
+      else if(header->tot_len != cur->header.tot_len) {
         ipc_free_readbuf(chan, cur);
         *err = "wrong packet length";
         return NULL;
@@ -579,14 +579,17 @@ static ipc_readbuf_t *channel_get_readbuf(ipc_channel_t *chan, ipc_packet_header
     return NULL;
   }
   
-  cur = malloc(sizeof(*cur) + header->tot_len);
+  cur = malloc(sizeof(*cur) + header->tot_len + 2*sizeof(void*));
   if(!cur) {
     *err = "out of memory";
     return NULL;
   }
   
-  cur->pkt.header = *header;
-  cur->body_cur = cur->pkt.body;
+  cur->header = *header;
+  cur->body.name = (char *)ngx_align_ptr((char *)&cur[1], sizeof(void*));
+  cur->body.data = (char *)ngx_align_ptr(cur->body.name + header->name_len, sizeof(void*));
+  cur->body.bytes_read = 0;
+  
   cur->prev = NULL;
   cur->next = chan->rbuf_head;
   
@@ -599,31 +602,49 @@ static ipc_readbuf_t *channel_get_readbuf(ipc_channel_t *chan, ipc_packet_header
   return cur;
 }
 
-static int ipc_clear_socket_readbuf(ngx_socket_t s) {
+static int ipc_clear_socket_readbuf(ngx_socket_t s, size_t limit) {
   char  buf[PIPE_BUF];
   int   total = 0;
   int   n = sizeof(buf);
   
-  do {
-    total += n;
-    n = read(s, buf, sizeof(buf));
-  } while(n > 0);
+  if(limit > 0) {
+    do {
+      total += n;
+      n = read(s, buf, sizeof(buf));
+    } while(n > 0);
+  }
+  else {
+    size_t read_sz;
+    do {
+      total += n;
+      read_sz = limit > sizeof(buf) ? sizeof(buf) : limit;
+      limit -= read_sz;
+      n = read(s, buf, sizeof(buf));
+    } while(n > 0 && limit > 0);
+  }
   
   return total;
 }
-
 
 static ngx_int_t ipc_read(ipc_t *ipc, ipc_channel_t *ipc_channel, ipc_alert_handler_pt handler, ngx_log_t *log) {
   ssize_t             n;
   ngx_socket_t        s = ipc_channel->read_conn->fd;
   ngx_str_t           name, data;
-  ipc_packet_buf_t    pkt;
+  
+  ipc_packet_header_t header;
+  struct {
+    char                name[IPC_ALERT_NAME_MAX_LEN];
+    char                data[IPC_PKT_MAX_BODY_SIZE];
+  }                   body;
+  
+  struct iovec        iov[2];
+  
   int                 discarded;
   char               *err;
   ipc_readbuf_t      *rbuf;
   
   while(1) {
-    n = read(s, &pkt.header, IPC_PKT_HEADER_SIZE);
+    n = read(s, &header, IPC_PKT_HEADER_SIZE);
     
     if (n == -1 && ngx_errno == NGX_EAGAIN) {
       return NGX_AGAIN;
@@ -633,79 +654,104 @@ static ngx_int_t ipc_read(ipc_t *ipc, ipc_channel_t *ipc_channel, ipc_alert_hand
       return NGX_ERROR;
     }
     else if(n != IPC_PKT_HEADER_SIZE) {
-      discarded = ipc_clear_socket_readbuf(s);
-      ERR(ipc, "unexpected non-atomic read of packet header size %i, expected %i bytes. Discarded %i bytes of data.", n, IPC_PKT_HEADER_SIZE, pkt.header.pkt_len, discarded);
+      discarded = ipc_clear_socket_readbuf(s, 0);
+      ERR(ipc, "unexpected non-atomic read of packet header size %i, expected %i bytes. Discarded %i bytes of data.", n, IPC_PKT_HEADER_SIZE, header.pkt_len, discarded);
       return NGX_AGAIN;
     }
-    else if(pkt.header.pkt_len > IPC_PKT_MAX_BODY_SIZE) {
-      discarded = ipc_clear_socket_readbuf(s);
-      ERR(ipc, "got corrupt packet size %i. Discarded %i bytes of data.", pkt.header.pkt_len, discarded);
+    else if(header.pkt_len > IPC_PKT_MAX_BODY_SIZE) {
+      discarded = ipc_clear_socket_readbuf(s, 0);
+      ERR(ipc, "got corrupt packet size %i. Discarded %i bytes of data.", header.pkt_len, discarded);
       return NGX_AGAIN;
     }
-    else if(pkt.header.name_len > pkt.header.tot_len) {
-      discarded = ipc_clear_socket_readbuf(s);
-      ERR(ipc, "got corrupt packet alert-name size %i. Discarded %i bytes of data.", pkt.header.name_len, discarded);
+    else if(header.name_len > header.tot_len) {
+      discarded = ipc_clear_socket_readbuf(s, 0);
+      ERR(ipc, "got corrupt packet alert-name size %i. Discarded %i bytes of data.", header.name_len, discarded);
       return NGX_AGAIN;
     }
     
-    switch (pkt.header.ctrl) {
+    switch (header.ctrl) {
       case '$':
-        if(pkt.header.tot_len != pkt.header.pkt_len) {
-          discarded = ipc_clear_socket_readbuf(s);
-          ERR(ipc, "got inconsistent whole-packet size %i. Discarded %i bytes of data.", pkt.header.pkt_len, discarded);
+        if(header.tot_len != header.pkt_len) {
+          discarded = ipc_clear_socket_readbuf(s, 0);
+          ERR(ipc, "got inconsistent whole-packet size %i. Discarded %i bytes of data.", header.pkt_len, discarded);
           return NGX_AGAIN;
         }
         //assert(n == pkt.pkt_len);
-        n = read(s, pkt.body, pkt.header.pkt_len);
-        if(n != pkt.header.pkt_len) {
-          discarded = ipc_clear_socket_readbuf(s);
-          ERR(ipc, "unexpected non-atomic read of size %i, expected %i. Discarded %i bytes of data.", n, pkt.header.pkt_len, discarded);
+        
+        iov[0].iov_base = body.name;
+        iov[0].iov_len = header.name_len;
+        iov[1].iov_base = body.data;
+        iov[1].iov_len = header.pkt_len - header.name_len;
+        n = readv(s, iov, 2);
+        if(n != header.pkt_len) {
+          discarded = ipc_clear_socket_readbuf(s, 0);
+          ERR(ipc, "unexpected non-atomic read of size %i, expected %i. Discarded %i bytes of data.", n, header.pkt_len, discarded);
           return NGX_AGAIN;
         }
-        name.len = pkt.header.name_len;
-        name.data = pkt.body;
-        data.len = pkt.header.tot_len - name.len;
-        data.data = name.data + name.len;
+        name.data = iov[0].iov_base;
+        name.len = iov[0].iov_len;
+        
+        data.data = iov[1].iov_base;
+        data.len = iov[1].iov_len;
+        
         //DBG("read %i byte pkt", n + IPC_PKT_HEADER_SIZE);
-        handler(pkt.header.src_pid, pkt.header.src_slot, &name, &data);
+        handler(header.src_pid, header.src_slot, &name, &data);
         break;
         
       case '>':
       case '+':
-        if(pkt.header.tot_len <= pkt.header.pkt_len) {
-          discarded = ipc_clear_socket_readbuf(s);
-          ERR(ipc, "got unexpectedly small part-packet total size %i. Discarded %i bytes of data.", pkt.header.tot_len, discarded);
+        if(header.tot_len <= header.pkt_len) {
+          discarded = ipc_clear_socket_readbuf(s, 0);
+          ERR(ipc, "got unexpectedly small part-packet total size %i. Discarded %i bytes of data.", header.tot_len, discarded);
           return NGX_AGAIN;
         }
         
-        rbuf = channel_get_readbuf(ipc_channel, &pkt.header, &err);
+        rbuf = channel_get_readbuf(ipc_channel, &header, &err);
         if(!rbuf) {
-          n = read(s, pkt.body, pkt.header.pkt_len);
+          ipc_clear_socket_readbuf(s, header.pkt_len);
           ERR(ipc, "dropped weird packet: %s", err);
           return NGX_AGAIN;
         }
         
-        n = read(s, rbuf->body_cur, pkt.header.pkt_len);
-        if(n != pkt.header.pkt_len) {
-          discarded = ipc_clear_socket_readbuf(s);
-          ERR(ipc, "unexpected non-atomic read of size %i, expected %i. Discarded %i bytes of data.", n, pkt.header.pkt_len, discarded);
+        if(rbuf->body.bytes_read < header.name_len) {
+          if(rbuf->body.bytes_read != 0) {
+            ipc_clear_socket_readbuf(s, header.pkt_len);
+            ERR(ipc, "dropped weird alert name doesn't fit in first packet: %s", err);
+            return NGX_AGAIN;
+          }
+          iov[0].iov_base = rbuf->body.name;
+          iov[0].iov_len = header.name_len;
+          iov[1].iov_base = rbuf->body.data;
+          iov[1].iov_len = header.pkt_len - header.name_len;
+          n = readv(s, iov, 2);
+        }
+        else {
+          //just reading data now
+          char *cur = rbuf->body.data + rbuf->body.bytes_read - header.name_len;
+          n = read(s, cur, header.pkt_len);
+        }
+        
+        if(n != header.pkt_len) {
+          discarded = ipc_clear_socket_readbuf(s, 0);
+          ERR(ipc, "unexpected non-atomic read of size %i, expected %i. Discarded %i bytes of data.", n, header.pkt_len, discarded);
           return NGX_AGAIN;
         }
         //DBG("read %i byte pkt", n + IPC_PKT_HEADER_SIZE);
-        rbuf->body_cur += n;
-        if((size_t )(rbuf->body_cur - rbuf->pkt.body) == rbuf->pkt.header.tot_len) { //alert finished
-          name.len = rbuf->pkt.header.name_len;
-          name.data = rbuf->pkt.body;
-          data.len = rbuf->pkt.header.tot_len - name.len;
-          data.data = name.data + name.len;
-          handler(pkt.header.src_pid, pkt.header.src_slot, &name, &data);
+        rbuf->body.bytes_read += n;
+        
+        if(rbuf->body.bytes_read == rbuf->header.tot_len) { //alert finished
+          name.len = rbuf->header.name_len;
+          name.data = (u_char *)rbuf->body.name;
+          data.len = rbuf->header.tot_len - name.len;
+          data.data = (u_char *)rbuf->body.data;
+          handler(header.src_pid, header.src_slot, &name, &data);
           ipc_free_readbuf(ipc_channel, rbuf);
         }
         break;
         
       default:
-        discarded = ipc_clear_socket_readbuf(s);
-        ERR(ipc, "got unexpected packet ctrl code '%c'. Discarded %i bytes of data.", pkt.header.ctrl, discarded);
+        discarded = ipc_clear_socket_readbuf(s, 0);
+        ERR(ipc, "got unexpected packet ctrl code '%c'. Discarded %i bytes of data.", header.ctrl, discarded);
         return NGX_AGAIN;
     }
   }
