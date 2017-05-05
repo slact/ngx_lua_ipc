@@ -12,7 +12,7 @@ _openresty_ver=1.11.2.2
 
 _target_module_name=ngx_lua_ipc
 
-pkgname=nginx-${_target_module_name}-dev
+pkgname=nginx-${_target_module_name}-dev-git
 
 if [[ -n $OPENRESTY_CUSTOM_VERSION ]]; then
   _openresty_ver=$OPENRESTY_CUSTOM_VERSION

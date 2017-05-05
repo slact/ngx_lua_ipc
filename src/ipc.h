@@ -35,17 +35,16 @@ typedef struct {
 #define IPC_PKT_HEADER_SIZE    (sizeof(ipc_packet_header_t))
 #define IPC_PKT_MAX_BODY_SIZE  (PIPE_BUF - IPC_PKT_HEADER_SIZE)
 
-typedef struct {
-  ipc_packet_header_t  header;
-  u_char               body[IPC_PKT_MAX_BODY_SIZE];
-} ipc_packet_buf_t;
-
 typedef struct ipc_readbuf_s ipc_readbuf_t;
 struct ipc_readbuf_s {
   ipc_readbuf_t      *prev;
   ipc_readbuf_t      *next;
-  u_char             *body_cur;
-  ipc_packet_buf_t    pkt;
+  ipc_packet_header_t header;
+  struct {
+    char                *name;
+    char                *data;
+    size_t               bytes_read;
+  }                   body;
 }; //ipc_readbuf_t
 
 typedef struct ipc_s ipc_t;
