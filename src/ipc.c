@@ -44,7 +44,7 @@ typedef struct {
 
 static void ipc_worker_read_handler(ngx_event_t *ev);
 
-static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker));
+static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers);
 static ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle);
 static void ipc_free_readbuf(ipc_channel_t *chan, ipc_readbuf_t *rbuf);
 static ngx_int_t ipc_close_channel(ipc_channel_t *chan);
@@ -70,7 +70,7 @@ static ipc_t *ipc_create(const char *ipc_name) {
   ngx_memzero(ipc, sizeof(*ipc));
   int                             i = 0;
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
-    ipc_init_channel(ipc, &ipc->worker_channel[i]);
+    ipc_init_channel(ipc, &ipc->channel[i]);
   }
   
   ipc->shm = NULL;
@@ -102,7 +102,7 @@ ipc_t *ipc_init_module(const char *ipc_name, ngx_cycle_t *cycle) {
   
   ngx_shmtx_create(&shdata->mutex, &shdata->lock, (u_char *)ipc_name);
   
-  ipc_open(ipc, cycle, max_processes, NULL);
+  ipc_open(ipc, cycle, ccf->worker_processes);
   return ipc;
 }
 
@@ -153,12 +153,7 @@ ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   
   for(i=0; !found && i < max_processes; i++) {
     procslot = &shdata->process_slots[i];
-    if( procslot->pid == 0) {
-      // empty procslot
-      found = 1;
-    }
-    else if(procslot->slot == ngx_process_slot) {
-      // replacing previously crashed(?) worker
+    if(procslot->slot == ngx_process_slot) {
       found = 1;
     }
   }
@@ -172,6 +167,8 @@ ngx_int_t ipc_init_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   }
   else {
     ERR(ipc, "NOT FOUND");
+    ngx_shmtx_unlock(&shdata->mutex);
+    return NGX_ERROR;
   }
   ngx_shmtx_unlock(&shdata->mutex);
   
@@ -196,8 +193,8 @@ ngx_int_t ipc_destroy(ipc_t *ipc) {
   int                  i;
   
   for (i=0; i<NGX_MAX_PROCESSES; i++) {
-    ipc_close_channel(&ipc->worker_channel[i]);
-    ipc->worker_channel[i].active = 0;
+    ipc_close_channel(&ipc->channel[i]);
+    ipc->channel[i].active = 0;
   }
   
   munmap(ipc->shm, ipc->shm_sz);
@@ -232,8 +229,8 @@ ngx_int_t ipc_get_slot(ipc_t *ipc, ngx_pid_t pid) {
   return NGX_ERROR;
 }
 
-ngx_int_t ipc_set_worker_alert_handler(ipc_t *ipc, ipc_alert_handler_pt alert_handler) {
-  ipc->worker_alert_handler=alert_handler;
+ngx_int_t ipc_set_alert_handler(ipc_t *ipc, ipc_alert_handler_pt alert_handler) {
+  ipc->alert_handler=alert_handler;
   return NGX_OK;
 }
 
@@ -284,12 +281,12 @@ static ngx_int_t ipc_activate_channel(ipc_t *ipc, ngx_cycle_t *cycle, ipc_channe
   return NGX_OK;
 }
 
-static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, void (*slot_callback)(int slot, int worker)) {
+static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers) {
 //initialize pipes for workers in advance.
   int                             i, s = 0;
   ngx_int_t                       last_expected_process = ngx_last_process;
-  ipc_channel_t                  *worker_channel;
-  
+  ipc_channel_t                  *channel;
+  ipc_shm_data_t                 *shdata = ipc->shm;
   /* here's the deal: we have no control over fork()ing, nginx's internal 
     * socketpairs are unusable for our purposes (as of nginx 0.8 -- check the 
     * code to see why), and the module initialization callbacks occur before
@@ -300,22 +297,26 @@ static ngx_int_t ipc_open(ipc_t *ipc, ngx_cycle_t *cycle, ngx_int_t workers, voi
     * advance. Meaning the spawning logic must be copied to the T.
     * ... with some allowances for already-opened sockets...
     */
-  for(i=0; i < workers; i++) {
+  for(i=0; i < workers + NGX_MAX_HELPER_PROCESSES; i++) { //workers and possible cache loader and manager
     //copypasta from os/unix/ngx_process.c (ngx_spawn_process)
     while (s < last_expected_process && ngx_processes[s].pid != -1) {
       //find empty existing slot
       s++;
     }
     
-    if(slot_callback) {
-      slot_callback(s, i);
-    }
+    channel = &ipc->channel[s];
     
-    worker_channel = &ipc->worker_channel[s];
-
-    if(ipc_activate_channel(ipc, cycle, worker_channel, IPC_PIPE) != NGX_OK) {
+    if(ipc_activate_channel(ipc, cycle, channel, IPC_PIPE) != NGX_OK) {
       return NGX_ERROR;
     }
+    
+    shdata->process_slots[i].slot = s;
+    if(i < workers) {
+      //definitely a worker
+      shdata->process_count++;
+      shdata->process_slots[i].ngx_process_type = NGX_PROCESS_WORKER;
+    }
+    
     
     s++; //NEXT!!
   }
@@ -516,7 +517,7 @@ static ngx_int_t ipc_register_worker(ipc_t *ipc, ngx_cycle_t *cycle) {
   
   for(i=0; i< NGX_MAX_PROCESSES; i++) {
     
-    chan = &ipc->worker_channel[i];
+    chan = &ipc->channel[i];
     
     if(!chan->active) continue;
     
@@ -771,9 +772,9 @@ static void ipc_worker_read_handler(ngx_event_t *ev) {
   }
   c = ev->data;
   ipc = c->data;
-  ipc_channel = &ipc->worker_channel[ngx_process_slot];
+  ipc_channel = &ipc->channel[ngx_process_slot];
   
-  rc = ipc_read(ipc, ipc_channel, ipc->worker_alert_handler, ev->log);
+  rc = ipc_read(ipc, ipc_channel, ipc->alert_handler, ev->log);
   if (rc == NGX_ERROR) {
     ERR(ipc, "IPC_READ_SOCKET failed: bad connection. This should never have happened, yet here we are...");
     assert(0);
@@ -886,10 +887,10 @@ ngx_int_t ipc_alert_slot(ipc_t *ipc, ngx_int_t slot, ngx_str_t *name, ngx_str_t 
   if(!data) data = &empty;
   
   if(slot == ngx_process_slot) {
-    ipc->worker_alert_handler(ngx_pid, slot, name, data);
+    ipc->alert_handler(ngx_pid, slot, name, data);
     return NGX_OK;
   }
-  return ipc_alert_channel(&ipc->worker_channel[slot], name, data);
+  return ipc_alert_channel(&ipc->channel[slot], name, data);
 }
 
 
@@ -922,28 +923,35 @@ ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data) {
   return ipc_alert_all_processes(ipc, IPC_NGX_PROCESS_WORKER, name, data);
 }
 
+#define COLLECT_PROCESS_PROPERTY(shdata, ipc_process_type, prop, dst_array, found_count)  \
+for(int i=0; i < shdata->process_count; i++) {                                \
+  if ((ipc_process_type == IPC_NGX_PROCESS_WORKER && shdata->process_slots[i].ngx_process_type == NGX_PROCESS_WORKER) \
+   || (ipc_process_type == IPC_NGX_PROCESS_ANY)                               \
+   || (shdata->process_slots[i].process_type == ipc_process_type)){           \
+    dst_array[i] = shdata->process_slots[i].prop;                             \
+    (*found_count)++;                                                            \
+  }                                                                           \
+}
+
 ngx_pid_t *ipc_get_process_pids(ipc_t *ipc, int *pid_count, ipc_ngx_process_type_t type) {
   static ngx_pid_t pid_array[NGX_MAX_PROCESSES + NGX_MAX_HELPER_PROCESSES];
   ipc_shm_data_t         *shdata = ipc->shm;
-  int                     max_workers = shdata->process_count;
-  int                     i;
-  int                     found = 0;
-  
-  for(i=0; i<max_workers; i++) {
-    if (type  == IPC_NGX_PROCESS_ANY || shdata->process_slots[i].process_type == type) {
-      pid_array[i] = shdata->process_slots[i].pid;
-      found++;
-    }
-  }
-  if(pid_count) {
-    *pid_count = found;
-  }
-  
+  COLLECT_PROCESS_PROPERTY(shdata, type, pid, pid_array, pid_count)
   return pid_array;
+}
+
+ngx_int_t *ipc_get_process_slots(ipc_t *ipc, int *slot_count, ipc_ngx_process_type_t type) {
+  static ngx_int_t slot_array[NGX_MAX_PROCESSES + NGX_MAX_HELPER_PROCESSES];
+  ipc_shm_data_t         *shdata = ipc->shm;
+  COLLECT_PROCESS_PROPERTY(shdata, type, slot, slot_array, slot_count)  
+  return slot_array;
 }
 
 ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count) {
   return ipc_get_process_pids(ipc, pid_count, IPC_NGX_PROCESS_WORKER);
+}
+ngx_int_t *ipc_get_worker_slots(ipc_t *ipc, int *pid_count) {
+  return ipc_get_process_slots(ipc, pid_count, IPC_NGX_PROCESS_WORKER);
 }
 
 
