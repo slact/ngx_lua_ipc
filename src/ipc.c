@@ -12,7 +12,7 @@
 
 //#define IPC_DEBUG_ON
 
-#define LOG(ipc, code, lvl, fmt, args...) ngx_log_error(lvl, ngx_cycle->log, code, "IPC %s: " fmt, ((ipc) ? (ipc)->name : ""), ##args)
+#define LOG(ipc, code, lvl, fmt, args...) ngx_log_error(lvl, ngx_cycle->log, code, "%s IPC: " fmt, ((ipc) ? (ipc)->name : ""), ##args)
 #ifdef IPC_DEBUG_ON
 #define DBG(fmt, args...) LOG((ipc_t *)NULL, 0, NGX_LOG_WARN, fmt, ##args)
 #else
