@@ -108,11 +108,12 @@ ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count);
 ngx_int_t *ipc_get_worker_slots(ipc_t *ipc, int *pid_count);
 
 ngx_int_t ipc_alert_all_processes(ipc_t *ipc, ipc_ngx_process_type_t type, ngx_str_t *name, ngx_str_t *data);
+ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data); //poor man's broadcast
 
 ipc_stats_t *ipc_get_stats(ipc_t *ipc);
 
 char *ipc_get_last_error(ipc_t *ipc);
 
-ngx_int_t ipc_alert_all_workers(ipc_t *ipc, ngx_str_t *name, ngx_str_t *data); //poor man's broadcast
+
 
 #endif //NGX_IPC_H
