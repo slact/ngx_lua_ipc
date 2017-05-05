@@ -12,6 +12,13 @@ struct ipc_alert_link_s {
   ipc_iovec_t       iovec;
 };
 
+typedef struct {
+  ngx_atomic_uint_t    packets_sent;
+  ngx_atomic_uint_t    packets_received;
+  ngx_atomic_uint_t    packets_pending; //waiting to be sent
+  //ngx_atomic_uint_t    dropped_packets;
+} ipc_stats_t;
+
 typedef struct ipc_writebuf_s ipc_writebuf_t;
 struct ipc_writebuf_s {
   ipc_alert_link_t         *head;
@@ -34,6 +41,8 @@ typedef struct {
 
 #define IPC_PKT_HEADER_SIZE    (sizeof(ipc_packet_header_t))
 #define IPC_PKT_MAX_BODY_SIZE  (PIPE_BUF - IPC_PKT_HEADER_SIZE)
+
+#define IPC_PKT_MAX_SIZE        PIPE_BUF
 
 typedef struct ipc_readbuf_s ipc_readbuf_t;
 struct ipc_readbuf_s {
@@ -75,6 +84,8 @@ struct ipc_s {
   ngx_int_t              worker_process_count;
   ipc_alert_handler_pt   worker_alert_handler;
   u_char                 last_error[IPC_MAX_ERROR_LEN];
+  
+  unsigned               track_stats:1;
 }; //ipc_t
 
 //IPC needs to be initialized in two steps init_module (prefork), and init_worker (post-fork)
@@ -94,6 +105,8 @@ ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count); //useful for debuggi
 
 ngx_pid_t *ipc_get_process_pids(ipc_t *ipc, int *pid_count, ipc_ngx_process_type_t type);
 ngx_int_t ipc_alert_all_processes(ipc_t *ipc, ipc_ngx_process_type_t type, ngx_str_t *name, ngx_str_t *data);
+
+ipc_stats_t *ipc_get_stats(ipc_t *ipc);
 
 char *ipc_get_last_error(ipc_t *ipc);
 

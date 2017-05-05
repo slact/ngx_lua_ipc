@@ -326,12 +326,14 @@ static ngx_int_t ngx_lua_ipc_init_module(ngx_cycle_t *cycle) {
     ipc_destroy(ipc);
   }
   ipc = ipc_init_module("ngx_lua_ipc", cycle);
+  //ipc->track_stats = 1;
   ipc_set_worker_alert_handler(ipc, ngx_lua_ipc_alert_handler);
   
   return NGX_OK;
 }
 
-static ngx_int_t ngx_lua_ipc_init_worker(ngx_cycle_t *cycle) {
+
+static ngx_int_t ngx_lua_ipc_init_worker(ngx_cycle_t *cycle) {  
   return ipc_init_worker(ipc, cycle);
 }
 

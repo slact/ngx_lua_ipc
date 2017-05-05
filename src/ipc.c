@@ -25,6 +25,10 @@
 
 #define NGX_MAX_HELPER_PROCESSES 2 // don't extend IPC to helpers. just workers for now.
 
+#define UPDATE_STAT(ipc, stat_name, delta)     \
+  ngx_atomic_fetch_add((ngx_atomic_uint_t *)&((ipc_shm_data_t *)ipc->shm)->stats.stat_name, delta)
+
+  
 //shared memory stuff
 typedef struct {
   ngx_pid_t               pid;
@@ -37,10 +41,10 @@ typedef struct {
   process_slot_tracking_t  *process_slots;
   ngx_int_t                 process_count;
   ngx_int_t                 max_process_count;
+  ipc_stats_t               stats;
   ngx_shmtx_sh_t            lock;
   ngx_shmtx_t               mutex;
 } ipc_shm_data_t;
-
 
 static void ipc_worker_read_handler(ngx_event_t *ev);
 
@@ -381,6 +385,8 @@ static ngx_int_t ipc_write_iovec(ipc_t *ipc, ngx_socket_t fd, ipc_iovec_t *vec) 
     return NGX_ERROR;
   }
   //DBG("wrote %i byte pkt", n);
+  if(ipc->track_stats)
+    UPDATE_STAT(ipc, packets_sent, 1);
   return NGX_OK;
 }
 
@@ -431,6 +437,10 @@ static ngx_int_t ipc_enqueue_tmp_iovec(ipc_t *ipc, ipc_writebuf_t *wb) {
   wb->tail = link;
   
   vec->n = 0;
+  
+  if(ipc->track_stats) {
+    UPDATE_STAT(ipc, packets_pending, 1);
+  }
   return NGX_OK;
 }
 
@@ -446,11 +456,12 @@ static void ipc_write_handler(ngx_event_t *ev) {
   
   ipc_channel_t           *chan = c->data;
   ipc_alert_link_t        *cur;
-  
+  ipc_t                   *ipc = chan->ipc;
   ngx_int_t                rc = NGX_OK;
   
+  int                      delta = 0;
   while((cur = chan->wbuf.head) != NULL) {
-    rc = ipc_write_iovec(chan->ipc, fd, &cur->iovec);
+    rc = ipc_write_iovec(ipc, fd, &cur->iovec);
     
     if(rc == NGX_OK) {
       chan->wbuf.head = cur->next;
@@ -458,10 +469,15 @@ static void ipc_write_handler(ngx_event_t *ev) {
         chan->wbuf.tail = NULL;
       }
       free(cur);
+      delta--;
     }
     else {
       break;
     }
+  }
+  
+  if(delta != 0 && ipc->track_stats) {
+    UPDATE_STAT(ipc, packets_pending, delta);
   }
   
   if(rc == NGX_OK && chan->wbuf.last_iovec.n > 0) {
@@ -695,6 +711,9 @@ static ngx_int_t ipc_read(ipc_t *ipc, ipc_channel_t *ipc_channel, ipc_alert_hand
         data.len = iov[1].iov_len;
         
         //DBG("read %i byte pkt", n + IPC_PKT_HEADER_SIZE);
+        if(ipc->track_stats)
+          UPDATE_STAT(ipc, packets_received, 1);
+        
         handler(header.src_pid, header.src_slot, &name, &data);
         break;
         
@@ -949,4 +968,10 @@ ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count) {
 
 char *ipc_get_last_error(ipc_t *ipc) {
   return (char *)ipc->last_error;
+}
+
+ipc_stats_t *ipc_get_stats(ipc_t *ipc) {
+ static ipc_stats_t   stats;
+  stats = ((ipc_shm_data_t *)ipc->shm)->stats;
+  return &stats;
 }
