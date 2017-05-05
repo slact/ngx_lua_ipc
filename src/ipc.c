@@ -963,7 +963,7 @@ ngx_pid_t *ipc_get_process_pids(ipc_t *ipc, int *pid_count, ipc_ngx_process_type
 ngx_int_t *ipc_get_process_slots(ipc_t *ipc, int *slot_count, ipc_ngx_process_type_t type) {
   static ngx_int_t slot_array[NGX_MAX_PROCESSES + NGX_MAX_HELPER_PROCESSES];
   ipc_shm_data_t         *shdata = ipc->shm;
-  *pid_count=0;
+  *slot_count=0;
   COLLECT_PROCESS_PROPERTY(shdata, type, slot, slot_array, slot_count)  
   return slot_array;
 }
@@ -971,8 +971,8 @@ ngx_int_t *ipc_get_process_slots(ipc_t *ipc, int *slot_count, ipc_ngx_process_ty
 ngx_pid_t *ipc_get_worker_pids(ipc_t *ipc, int *pid_count) {
   return ipc_get_process_pids(ipc, pid_count, IPC_NGX_PROCESS_WORKER);
 }
-ngx_int_t *ipc_get_worker_slots(ipc_t *ipc, int *pid_count) {
-  return ipc_get_process_slots(ipc, pid_count, IPC_NGX_PROCESS_WORKER);
+ngx_int_t *ipc_get_worker_slots(ipc_t *ipc, int *slot_count) {
+  return ipc_get_process_slots(ipc, slot_count, IPC_NGX_PROCESS_WORKER);
 }
 
 
