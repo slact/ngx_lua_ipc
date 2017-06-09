@@ -58,7 +58,7 @@ struct ipc_readbuf_s {
 
 typedef struct ipc_s ipc_t;
 
-typedef enum {IPC_NGX_PROCESS_WORKER, IPC_NGX_PROCESS_CACHE_MANAGER, IPC_NGX_PROCESS_CACHE_LOADER, IPC_NGX_PROCESS_UNKNOWN,  IPC_NGX_PROCESS_ANY} ipc_ngx_process_type_t;
+typedef enum {IPC_NGX_PROCESS_UNKNOWN, IPC_NGX_PROCESS_WORKER, IPC_NGX_PROCESS_CACHE_MANAGER, IPC_NGX_PROCESS_CACHE_LOADER,  IPC_NGX_PROCESS_ANY} ipc_ngx_process_type_t;
 
 typedef enum {IPC_PIPE, IPC_SOCKETPAIR} ipc_socket_type_t;
 typedef struct {
