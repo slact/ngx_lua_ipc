@@ -947,8 +947,8 @@ for(int i=0; i < shdata->process_count; i++) {                                \
   if ((ipc_process_type == IPC_NGX_PROCESS_WORKER && shdata->process_slots[i].ngx_process_type == NGX_PROCESS_WORKER) \
    || (ipc_process_type == IPC_NGX_PROCESS_ANY)                               \
    || (shdata->process_slots[i].process_type == ipc_process_type)){           \
-    dst_array[i] = shdata->process_slots[i].prop;                             \
-    (*found_count)++;                                                            \
+    dst_array[*found_count] = shdata->process_slots[i].prop;                  \
+    (*found_count)++;                                                         \
   }                                                                           \
 }
 
