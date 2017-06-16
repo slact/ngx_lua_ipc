@@ -178,7 +178,7 @@ static int ngx_lua_ipc_hacktimer_add_and_hack(lua_State *L) {
   }
   
   DBG("ngx_lua_ipc_hacktimer_add_and_hack");
-  assert(hacktimer == NULL);
+  //assert(hacktimer == NULL);
   
   luaL_checktype (L, 1, LUA_TFUNCTION);
   
