@@ -85,6 +85,7 @@ static int ngx_lua_ipc_hacktimer_get_last_alert(lua_State *L) {
     lua_pushinteger(L, last_alert.sender_pid);
     lua_pushlstring (L, (const char *)last_alert.name->data, last_alert.name->len);
     lua_pushlstring (L, (const char *)last_alert.data->data, last_alert.data->len);
+    alert_available = 0;
     return 4;
   }
   else {
@@ -229,7 +230,7 @@ static int ngx_lua_ipc_broadcast_alert(lua_State * L) {
 }
 
 static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender_slot, ngx_str_t *name, ngx_str_t *data) {
-  
+  int prev_alert_available = alert_available;
   if(!hacktimer && !running_hacked_timer_handler) {
     //no alert handlers here
     return;
@@ -241,23 +242,24 @@ static void ngx_lua_ipc_alert_handler(ngx_pid_t sender_pid, ngx_int_t sender_slo
   last_alert.name = name;
   last_alert.data = data;
   
-  //listener timer now!!
   alert_available = 1;
+  //listener timer now!!
   if(hacktimer && hacktimer->timer.key > ngx_current_msec) {
     DBG("run hacked timer right now: %p", hacktimer);
-    
     ngx_del_timer(hacktimer);
     hacktimer->handler(hacktimer);
     //ngx_add_timer(hacktimer, 0); //the slow way to do it -- run it next cycle
   }
   else if(!hacktimer) {
     DBG("timer handler running right now");
+    if(prev_alert_available) {
+      ERR("missed alert sent from %i to %i", last_alert.sender_pid, ngx_pid);
+    }
     assert(running_hacked_timer_handler == 1);
   }
   else {
     DBG("hacked timer %p already set to run on next cycle", hacktimer);
   }
-  alert_available = 0;
   return;
   
 }

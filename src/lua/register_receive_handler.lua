@@ -2,10 +2,11 @@ return function(ipc, run_timer_handler, add_hacktimer, get_last_alert_data)
   local timer_handler
   local meh = function() end
   timer_handler = function(premature)
-    
-    local src_slot, src_pid, name, data = get_last_alert_data()
-    
-    if src_slot ~= nil then
+    while true do
+      local src_slot, src_pid, name, data = get_last_alert_data()
+      if src_slot == nil then 
+        break
+      end
       ipc.sender = src_pid
       local handler = ipc.handlers[name]
       if handler then
@@ -15,9 +16,8 @@ return function(ipc, run_timer_handler, add_hacktimer, get_last_alert_data)
       else
         run_timer_handler(meh, name, data, true)
       end
+      ipc.sender = nil
     end
-    
-    ipc.sender = nil
     
     --add timer again and hack it
     add_hacktimer(timer_handler)
