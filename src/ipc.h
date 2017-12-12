@@ -3,7 +3,7 @@
 typedef struct ipc_alert_link_s ipc_alert_link_t;
 
 typedef struct {
-  struct iovec      iov[3];
+  struct iovec      iov[8];
   int               n;
 } ipc_iovec_t;
 

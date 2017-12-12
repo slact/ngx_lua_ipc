@@ -804,6 +804,128 @@ static void ipc_worker_read_handler(ngx_event_t *ev) {
   }
 }
 
+static ngx_int_t ipc_alert_channel_iov(ipc_channel_t *chan, ngx_str_t *name, struct iovec *data_iov, size_t data_iov_n) {
+  ipc_packet_header_t          header;
+  ipc_writebuf_t              *wb = &chan->wbuf;
+  ipc_iovec_t                  vec;
+  
+  int                          pad, i;
+  size_t                       data_len = 0;
+  
+  for(i=0; i<data_iov_n; i++) {
+    data_len += data_iov[i].iov_len;
+  }
+  
+  if(!chan->active) {
+    return NGX_ERROR;
+  }
+  
+  
+  if(name->len > IPC_ALERT_NAME_MAX_LEN) {
+    ERR(chan->ipc, "alert name length cannot exceed %i, was %i", IPC_ALERT_NAME_MAX_LEN, name->len);
+    return NGX_ERROR;
+  }
+  if(data_len > IPC_ALERT_DATA_MAX_LEN) {
+    ERR(chan->ipc, "alert data length cannot exceed %i, was %i", IPC_ALERT_DATA_MAX_LEN, data_len);
+    return NGX_ERROR;
+  }
+  
+  header.tot_len = data_len + name->len;
+  header.name_len = name->len;
+  header.src_slot = ngx_process_slot;
+  header.src_pid = ngx_pid;
+  
+  //zero the struct padding
+  pad = (u_char *)(&header + 1) - (&header.ctrl + 1);
+  if(pad > 0) {
+    ngx_memzero(&header.ctrl + 1, pad);
+  }
+  
+  vec.iov[0].iov_base = &header;
+  vec.iov[0].iov_len  = IPC_PKT_HEADER_SIZE;
+  
+  if(header.tot_len <= IPC_PKT_MAX_BODY_SIZE) {
+    header.pkt_len = header.tot_len;
+    header.ctrl = '$';
+    
+    vec.iov[1].iov_base = name->data;
+    vec.iov[1].iov_len  = name->len;
+    
+    for(i = 0; i < data_iov_n; i++) {
+      vec.iov[i+2] = data_iov[i];
+    }
+    vec.n = data_iov_n + 2;
+    
+    ipc_enqueue_write_iovec(chan->ipc, wb, &vec);
+    ipc_write_handler(chan->write_conn->write);
+  }
+  else {
+    size_t    name_left = name->len;
+    size_t    data_left = data->len;
+    u_char   *name_cur = name->data;
+    u_char   *data_cur = data->data;
+    size_t    name_len = 0;
+    size_t    data_len = 0;
+    
+    struct iovec cur_iov;
+    
+    int       data_cur_iov;
+    
+    int pktnum;
+    
+    i = 0;
+    j = 0;
+    for(pktnum = 0; name_left + data_left > 0; pktnum++) {
+      
+      header.ctrl = pktnum == 0 ? '>' : '+';
+      
+      if(name_left == 0) {
+        name_len = 0;
+      }
+      else {
+        j++;
+        name_cur += name_len;
+        name_len = name_left > IPC_PKT_MAX_BODY_SIZE ? IPC_PKT_MAX_BODY_SIZE : name_left;
+        vec.iov[j].iov_base = name->data;
+        vec.iov[j].iov_len  = name->len;
+        name_left -= name_len;
+      }
+      
+      while(1) {
+        cur_iov = data_iov[j++];
+        if(cur_iov <= IPC_PKT_MAX_BODY_SIZE - name_len) {
+          vec.iov
+        }
+        data_cur += data_len;
+        data_len = data_left > (IPC_PKT_MAX_BODY_SIZE - name_len) ? (IPC_PKT_MAX_BODY_SIZE - name_len) : data_left;
+        data_left -= data_len;
+        
+        header.pkt_len = name_len + data_len;
+      }
+      
+      
+      
+      i = 1;
+      
+      while(1){
+        
+        
+        
+      }
+      
+      vec.iov[2].iov_base = data_cur;
+      vec.iov[2].iov_len  = data_len;
+      
+      ipc_enqueue_write_iovec(chan->ipc, wb, &vec);
+      ipc_write_handler(chan->write_conn->write);
+    }
+    
+    //assert(name_left + data_left == 0);
+  }
+
+  return NGX_OK;
+}
+
 static ngx_int_t ipc_alert_channel(ipc_channel_t *chan, ngx_str_t *name, ngx_str_t *data) {
   ipc_packet_header_t          header;
   ipc_writebuf_t              *wb = &chan->wbuf;
