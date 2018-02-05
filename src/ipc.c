@@ -622,9 +622,9 @@ static ipc_readbuf_t *channel_get_readbuf(ipc_channel_t *chan, ipc_packet_header
 static int ipc_clear_socket_readbuf(ngx_socket_t s, size_t limit) {
   char  buf[PIPE_BUF];
   int   total = 0;
-  int   n = sizeof(buf);
+  int   n = 0;
   
-  if(limit > 0) {
+  if(limit == 0) {
     do {
       total += n;
       n = read(s, buf, sizeof(buf));
